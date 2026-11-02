@@ -22,7 +22,18 @@ Ui.BarWidget {
   function close() { root.popupOpen = false }
   function toggle() {
     root.popupOpen = !root.popupOpen
-    if (root.popupOpen) root.controller.ensureEngine()
+    if (root.popupOpen && !root.controller.busy) root.controller.discover()
+  }
+
+  function activateReceiver(mac) {
+    if (root.controller.busy) {
+      if (root.controller.selectedMac === mac && root.controller.phase !== "searching") root.controller.stop()
+      return
+    }
+    if (!root.controller.prerequisitesReady) return
+    root.controller.selectedMac = mac
+    root.close()
+    root.controller.connectSelected()
   }
 
   Component.onCompleted: root.controller.attach()
@@ -133,7 +144,8 @@ Ui.BarWidget {
           }
           Ui.Button {
             width: (parent.width - parent.spacing) / 2
-            text: "Detener"
+            text: root.controller.phase === "searching" ? "Cancelar búsqueda" : "Cancelar conexión"
+            visible: root.controller.busy && !root.controller.streaming
             bordered: true
             enabled: root.controller.busy
             foreground: root.foreground
@@ -145,7 +157,7 @@ Ui.BarWidget {
         Text {
           visible: root.controller.receivers.length === 0
           width: parent.width
-          text: "Pon la TV en Compartir pantalla y pulsa Buscar TV. No se conecta automáticamente."
+          text: "Pon la TV en Compartir pantalla. Selecciona una TV para conectar."
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: Qt.darker(root.foreground, 1.4)
@@ -166,8 +178,9 @@ Ui.BarWidget {
             border.color: Commons.Color.accent
             activeFocusOnTab: true
             Accessible.role: Accessible.Button
-            Accessible.name: modelData.name
-            Keys.onReturnPressed: root.controller.selectedMac = modelData.mac
+            Accessible.name: modelData.name + (root.controller.busy && root.controller.selectedMac === modelData.mac ? " · Desconectar" : " · Conectar")
+            Keys.onReturnPressed: root.activateReceiver(modelData.mac)
+            Keys.onSpacePressed: root.activateReceiver(modelData.mac)
             Column {
               id: receiverText
               anchors.centerIn: parent
@@ -184,7 +197,7 @@ Ui.BarWidget {
               }
               Text {
                 width: parent.width
-                text: receiverRow.modelData.mac + " · " + receiverRow.modelData.strength + "%"
+                text: root.controller.busy && root.controller.selectedMac === receiverRow.modelData.mac && root.controller.phase !== "searching" ? "Desconectar" : receiverRow.modelData.strength + "% · Conectar"
                 textFormat: Text.PlainText
                 color: Qt.darker(root.foreground, 1.4)
                 font.family: root.fontFamily
@@ -193,29 +206,16 @@ Ui.BarWidget {
             }
             MouseArea {
               anchors.fill: parent
-              enabled: !root.controller.busy
+              enabled: (!root.controller.busy && root.controller.prerequisitesReady) || (root.controller.busy && root.controller.selectedMac === receiverRow.modelData.mac && root.controller.phase !== "searching")
               cursorShape: Qt.PointingHandCursor
-              onClicked: { root.controller.selectedMac = receiverRow.modelData.mac; receiverRow.forceActiveFocus() }
+              onClicked: { receiverRow.forceActiveFocus(); root.activateReceiver(receiverRow.modelData.mac) }
             }
           }
         }
 
         Ui.Button {
           width: parent.width
-          text: root.controller.testPattern ? "Conectar patrón de prueba" : "Extender escritorio"
-          bordered: true
-          foreground: root.foreground
-          accent: Commons.Color.accent
-          enabled: !root.controller.busy && root.controller.selectedMac !== "" && root.controller.prerequisitesReady
-          onClicked: {
-            // Release the keyboard grab before the portal picker opens.
-            root.close()
-            root.controller.connectSelected()
-          }
-        }
-
-        Ui.Button {
-          width: parent.width
+          visible: root.showDiagnostics
           text: root.controller.testPattern ? "✓ Patrón de prueba (sin capturar pantalla)" : "Patrón de prueba (sin capturar pantalla)"
           selected: root.controller.testPattern
           bordered: true
@@ -236,17 +236,6 @@ Ui.BarWidget {
           font.pixelSize: Style.font.bodySmall
         }
 
-        Ui.Button {
-          width: parent.width
-          text: "Pantallas de Omarchy"
-          bordered: true
-          foreground: root.foreground
-          onClicked: {
-            root.close()
-            Quickshell.execDetached(["omarchy-shell", "shell", "toggle", "omarchy.monitor", "{}"])
-          }
-        }
-
         Text {
           width: parent.width
           text: "Experimental. Wi-Fi Direct puede afectar al Wi-Fi habitual; el motor cancela si detecta un cambio. No modifica UFW."
@@ -259,11 +248,12 @@ Ui.BarWidget {
 
         Ui.Button {
           width: parent.width
-          text: root.showDiagnostics ? "Ocultar diagnóstico" : "Diagnóstico"
+          text: root.showDiagnostics ? "Ocultar depuración" : "Depuración"
           bordered: true
           foreground: root.foreground
           onClicked: {
             root.showDiagnostics = !root.showDiagnostics
+            if (!root.showDiagnostics) root.controller.testPattern = false
             if (root.showDiagnostics && !root.controller.busy) root.controller.send({command: "doctor"})
           }
         }

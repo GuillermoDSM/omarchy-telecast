@@ -288,6 +288,13 @@ async fn stream(
     let mut interval_failures = 0u64;
     let mut queue = SendQueue::new();
     let mut dropped_packets = 0u64;
+    let mut dropped_expired = 0u64;
+    let mut dropped_overflow = 0u64;
+    let mut queue_peak = 0usize;
+    let mut packet_max_bytes = 0usize;
+    let mut keyframe_requests = 0u64;
+    let mut blocked_since: Option<Instant> = None;
+    let mut blocked_max_ms = 0u64;
     let mut last_keyframe = Instant::now() - Duration::from_secs(2);
     let mut keyframe_pending = false;
     let mut retry_send_at = Instant::now();
@@ -334,18 +341,22 @@ async fn stream(
             }
             _ = poll.tick() => {
                 let expired = queue.expire(Instant::now());
-                if expired > 0 { dropped_packets += expired; interval_failures += expired; keyframe_pending = true; }
+                if expired > 0 { dropped_packets += expired; dropped_expired += expired; interval_failures += expired; keyframe_pending = true; }
                 for _ in 0..32 {
                     let Some(packet) = video.packet()? else { break };
+                    packet_max_bytes = packet_max_bytes.max(packet.len());
                     interval_attempts += 1;
                     if queue.push(Instant::now(),packet) {
                         dropped_packets += 1;
+                        dropped_overflow += 1;
                         interval_failures += 1;
                         keyframe_pending = true;
                     }
+                    queue_peak = queue_peak.max(queue.len());
                 }
                 if keyframe_pending && last_keyframe.elapsed() >= Duration::from_secs(2) {
                     video.request_keyframe();
+                    keyframe_requests += 1;
                     last_keyframe = Instant::now();
                     keyframe_pending = false;
                 }
@@ -353,11 +364,12 @@ async fn stream(
             ready = async { tokio::time::sleep_until(retry_send_at).await; transport.udp.rtp.writable().await }, if !queue.is_empty() => {
                 ready.context("Error al esperar el socket RTP")?;
                 let expired = queue.expire(Instant::now());
-                if expired > 0 { dropped_packets += expired; interval_failures += expired; keyframe_pending = true; }
+                if expired > 0 { dropped_packets += expired; dropped_expired += expired; interval_failures += expired; keyframe_pending = true; }
                 for _ in 0..32 {
                     let Some(packet) = queue.front() else { break };
                     match transport.udp.rtp.try_send(packet) {
                         Ok(_) => {
+                            if let Some(start) = blocked_since.take() { blocked_max_ms = blocked_max_ms.max(start.elapsed().as_millis().min(u64::MAX as u128) as u64); }
                             timestamp = u32::from_be_bytes(packet[4..8].try_into().unwrap());
                             ssrc = u32::from_be_bytes(packet[8..12].try_into().unwrap());
                             payload_bytes = payload_bytes.wrapping_add((packet.len()-12) as u32);
@@ -366,7 +378,7 @@ async fn stream(
                             last_packet = Instant::now();
                             if packets == 1 { events.state("streaming","Enviando vídeo Miracast. Comprueba la imagen en la TV; no hay confirmación visual ni audio"); }
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => { send_would_block += 1; break; }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => { send_would_block += 1; blocked_since.get_or_insert_with(Instant::now); break; }
                         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => { send_memory_errors += 1; retry_send_at = Instant::now() + Duration::from_millis(5); break; }
                         Err(error) => return Err(error).context("Falló el envío RTP"),
                     }
@@ -375,7 +387,8 @@ async fn stream(
             _ = maintenance.tick() => {
                 let (captured,encoded,produced) = video.counters();
                 if last_packet.elapsed() >= Duration::from_secs(10) {
-                    events.send(json!({"event":"trace","stage":"stall","detail":"no_packets_sent","captured":captured,"encoded":encoded,"produced":produced,"packets":packets,"queue_dropped":dropped_packets,"queue_len":queue.len(),"send_timeouts":send_timeouts,"send_would_block":send_would_block,"send_memory_errors":send_memory_errors}));
+                    let blocked_current_ms = blocked_since.map_or(0, |start| start.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                    events.send(json!({"event":"trace","stage":"stall","detail":"no_packets_sent","captured":captured,"encoded":encoded,"produced":produced,"packets":packets,"queue_dropped":dropped_packets,"queue_expired":dropped_expired,"queue_overflow":dropped_overflow,"queue_len":queue.len(),"queue_peak":queue_peak,"queue_oldest_ms":queue.oldest_age_ms(Instant::now()),"packet_max_bytes":packet_max_bytes,"keyframe_requests":keyframe_requests,"blocked_current_ms":blocked_current_ms,"blocked_max_ms":blocked_max_ms.max(blocked_current_ms),"send_timeouts":send_timeouts,"send_would_block":send_would_block,"send_memory_errors":send_memory_errors}));
                     anyhow::bail!("No se enviaron paquetes de vídeo durante 10 segundos; consulta los contadores de captura, codificación y envío");
                 }
                 if let Some(manager) = manager {
@@ -402,7 +415,8 @@ async fn stream(
                 }
                 interval_attempts = 0;
                 interval_failures = 0;
-                events.send(json!({"event":"metrics","kbps":abr.kbps,"feedback":feedback,"packets":packets,"captured":captured,"encoded":encoded,"produced":produced,"queue_dropped":dropped_packets,"queue_len":queue.len(),"send_timeouts":send_timeouts,"send_would_block":send_would_block,"send_memory_errors":send_memory_errors,"width":transport.mode.width,"height":transport.mode.height,"fps":transport.mode.fps}));
+                let blocked_current_ms = blocked_since.map_or(0, |start| start.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                events.send(json!({"event":"metrics","kbps":abr.kbps,"feedback":feedback,"packets":packets,"captured":captured,"encoded":encoded,"produced":produced,"queue_dropped":dropped_packets,"queue_expired":dropped_expired,"queue_overflow":dropped_overflow,"queue_len":queue.len(),"queue_peak":queue_peak,"queue_oldest_ms":queue.oldest_age_ms(Instant::now()),"packet_max_bytes":packet_max_bytes,"keyframe_requests":keyframe_requests,"blocked_current_ms":blocked_current_ms,"blocked_max_ms":blocked_max_ms.max(blocked_current_ms),"send_timeouts":send_timeouts,"send_would_block":send_would_block,"send_memory_errors":send_memory_errors,"width":transport.mode.width,"height":transport.mode.height,"fps":transport.mode.fps}));
             }
         }
     }
@@ -501,10 +515,10 @@ mod tests {
                 (session.mode.width, session.mode.height, session.mode.fps) == (1920, 1080, 30),
                 "Wrong negotiated mode"
             );
-            let video = Video::start(&session.mode, Source::Test, 5000)?;
+            let video = Video::start(&session.mode, Source::Test, 4000)?;
             stream(&mut session, &video, &events, None).await?;
             ensure!(
-                video.bitrate() == 3750,
+                video.bitrate() == 3000,
                 "The encoder did not adapt live: {}",
                 video.bitrate()
             );
@@ -636,7 +650,7 @@ mod tests {
         result.unwrap().unwrap();
         let mut adapted = false;
         while let Ok(event) = rx.try_recv() {
-            if event["event"] == "metrics" && event["kbps"] == 3750 && event["feedback"] == true {
+            if event["event"] == "metrics" && event["kbps"] == 3000 && event["feedback"] == true {
                 adapted = true;
             }
         }

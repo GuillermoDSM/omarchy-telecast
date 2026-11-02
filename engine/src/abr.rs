@@ -3,7 +3,7 @@
 //! initial setting, and is explicitly marked unverified.
 
 pub const MIN_KBPS: u32 = 1500;
-pub const INITIAL_KBPS: u32 = 5000;
+pub const INITIAL_KBPS: u32 = 4000;
 pub const MAX_KBPS: u32 = 8000;
 
 /// Local send pressure is evidence of a congested sender, not proof of remote
@@ -44,12 +44,15 @@ impl LocalPressure {
             }
         } else {
             self.bad_seconds = 0;
-            if failed == 0 && attempts >= 10 && !fresh_feedback {
+            // Tolerate at most 1% local drops in each one-second window.
+            // These remain local signals, not evidence of receiver delivery.
+            if failed.saturating_mul(100) <= attempts && attempts >= 10 && !fresh_feedback {
                 self.clean_seconds = self.clean_seconds.saturating_add(1);
                 // Recovery is deliberately slow and capped at the initial
                 // conservative setting. Successful local sends don't prove
                 // delivery, so never call this remote congestion control.
-                if self.clean_seconds >= 60 && self.cooldown == 0 {
+                if self.clean_seconds >= 30 && self.cooldown == 0 && controller.kbps < INITIAL_KBPS
+                {
                     self.clean_seconds = 0;
                     self.cooldown = 10;
                     return controller
@@ -133,11 +136,11 @@ mod tests {
     fn congestion_reduces_and_recovery_is_slow() {
         let mut c = Controller::default();
         assert_eq!(c.report(0.1, 0.0), None);
-        assert_eq!(c.report(0.1, 0.0), Some(3750));
+        assert_eq!(c.report(0.1, 0.0), Some(3000));
         for _ in 0..9 {
             assert_eq!(c.report(0.0, 10.0), None);
         }
-        assert_eq!(c.report(0.0, 10.0), Some(4000));
+        assert_eq!(c.report(0.0, 10.0), Some(3250));
     }
 
     #[test]
@@ -164,17 +167,17 @@ mod tests {
             assert!(p.observe(100, 5, &mut c, false).is_none());
             assert!(p.observe(100, 0, &mut c, false).is_none());
         }
-        assert_eq!(c.kbps, 5000);
+        assert_eq!(c.kbps, 4000);
         assert!(p.observe(100, 10, &mut c, false).is_none());
         assert!(p.observe(100, 10, &mut c, false).is_none());
         assert_eq!(
             p.observe(100, 10, &mut c, false),
-            Some(("local_pressure", 3750))
+            Some(("local_pressure", 3000))
         );
         for _ in 0..9 {
             assert!(p.observe(100, 10, &mut c, false).is_none());
         }
-        assert_eq!(c.kbps, 3750);
+        assert_eq!(c.kbps, 3000);
     }
 
     #[test]
@@ -182,17 +185,39 @@ mod tests {
         let mut c = Controller::default();
         let mut p = LocalPressure::new();
         c.reduce();
-        for _ in 0..59 {
-            assert!(p.observe(100, 0, &mut c, false).is_none());
+        for _ in 0..29 {
+            assert!(p.observe(100, 1, &mut c, false).is_none());
         }
         assert_eq!(
-            p.observe(100, 0, &mut c, false),
-            Some(("local_recovery_unverified", 4000))
+            p.observe(100, 1, &mut c, false),
+            Some(("local_recovery_unverified", 3250))
         );
         for _ in 0..1000 {
             p.observe(100, 0, &mut c, false);
         }
         assert_eq!(c.kbps, INITIAL_KBPS);
         assert!(!c.receiver_feedback);
+    }
+
+    #[test]
+    fn excessive_drops_or_recent_feedback_interrupt_local_recovery() {
+        let mut c = Controller::default();
+        c.reduce();
+        let mut p = LocalPressure::new();
+        for _ in 0..29 {
+            assert!(p.observe(100, 1, &mut c, false).is_none());
+        }
+        assert!(p.observe(100, 2, &mut c, false).is_none());
+        for _ in 0..29 {
+            assert!(p.observe(100, 0, &mut c, false).is_none());
+        }
+        assert!(p.observe(100, 0, &mut c, true).is_none());
+        for _ in 0..29 {
+            assert!(p.observe(100, 0, &mut c, false).is_none());
+        }
+        assert_eq!(
+            p.observe(100, 0, &mut c, false),
+            Some(("local_recovery_unverified", 3250))
+        );
     }
 }

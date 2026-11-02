@@ -19,10 +19,11 @@ el controlador, el firmware ni las limitaciones de NetworkManager.
 - Negociación RTSP/WFD de vídeo sin protección de contenido ni audio.
 - H.264/x264 → MPEG-TS → RTP/UDP, con un máximo de 1080p30.
   Si el receptor no permite 1080p30 se intenta 720p30 y después VGA60.
-- Bitrate inicial 5 Mb/s, mínimo 1,5 y máximo 8. El descenso por presión
+- Bitrate inicial 4 Mb/s, mínimo 1,5 y máximo 8. El descenso por presión
   local exige tres intervalos consecutivos y aplica una pausa de diez segundos.
-  Sin RTCP, tras 60 segundos de envíos locales sin errores se recuperan 250 kb/s,
-  hasta un máximo de 5 Mb/s: eso **no verifica la recepción en la TV**.
+  Sin RTCP, tras 30 segundos con hasta un 1 % de descartes locales por segundo
+  se recuperan 250 kb/s,
+  hasta un máximo de 4 Mb/s: eso **no verifica la recepción en la TV**.
   Con RTCP reciente se usan los informes del receptor para subir. Se cambia
   `x264enc.bitrate` en PLAYING.
 - La cola de envío en espacio de usuario admite hasta 32 datagramas RTP y
@@ -119,13 +120,12 @@ distribución actual de la barra.
 ## Primera prueba con la TV
 
 1. Poner la TV en Compartir pantalla/Miracast, no AirPlay.
-2. Abrir el widget y pulsar **Buscar TV**.
-3. Seleccionar el receptor. Conviene empezar con **Patrón de prueba**: no
-   captura el escritorio ni crea un monitor.
-4. Conectar y aceptar en la TV. Consultar el error por etapa si falla.
-5. Solo después probar **Extender escritorio** y elegir `OMARCHY-WFD-<pid>`
-   en el selector del portal. Confirmar visualmente la imagen en la TV.
-6. **Detener** libera la sesión. Clic central en el icono también detiene.
+2. Abrir el widget: comienza una búsqueda si no hay otra operación activa.
+3. Seleccionar la TV para conectar y elegir `OMARCHY-WFD-<pid>` en el portal.
+   Confirmar visualmente la imagen en la TV.
+4. Seleccionar la TV conectada para desconectar. Clic central en el icono
+   también detiene la sesión. La sección **Depuración** permite activar el
+   patrón de prueba, que no captura el escritorio ni crea un monitor.
 
 El estado «Enviando vídeo» significa que PLAY fue aceptado y salieron paquetes;
 **no afirma que el televisor los haya decodificado o mostrado**.
@@ -153,12 +153,19 @@ El historial del widget es limitado y reside en memoria. Cada conexión crea
 además un archivo JSONL privado (0600) en `~/.local/state/omarchy-miracast/sessions/`
 (o `$XDG_STATE_HOME/omarchy-miracast/sessions/`). Guarda horas Unix en
 milisegundos, etapas RTSP, código de error del sistema, resolución, bitrate,
-contadores y estado RTCP; no guarda nombres, MAC, IP, credenciales, cuerpos
-RTSP ni imágenes. El archivo se limita a 3600 registros y las métricas se
+  contadores y estado RTCP; no guarda nombres, MAC, IP, credenciales, cuerpos
+  RTSP ni imágenes. El archivo se limita a 3600 registros y las métricas se
 muestrean cada 10 segundos. No hay limpieza automática: revísalos y elimínalos
 cuando ya no los necesites. El panel Diagnóstico indica el archivo de la sesión.
-Si no se puede crear de forma privada, se muestra un aviso y la conexión sigue
-sin registro. Los nuevos registros no contienen datos de sesiones anteriores.
+  Si no se puede crear de forma privada, se muestra un aviso y la conexión sigue
+  sin registro. Los nuevos registros no contienen datos de sesiones anteriores.
+
+El diagnóstico de cola distingue descartes por antigüedad y desbordamiento,
+incluye su ocupación máxima y antigüedad actual, tamaño máximo de datagrama,
+solicitudes locales de imagen clave y tiempo desde `WouldBlock` hasta el
+siguiente envío exitoso. Son contadores agregados, no contenido de paquetes;
+la antigüedad solo mide la cola del motor. Las solicitudes de imagen clave no
+demuestran cuándo se codificó ni el tamaño de la imagen resultante.
 
 ## Retirar
 

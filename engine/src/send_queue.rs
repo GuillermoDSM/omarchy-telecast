@@ -26,6 +26,13 @@ impl SendQueue {
     pub fn front(&self) -> Option<&[u8]> {
         self.packets.front().map(|(_, p)| p.as_slice())
     }
+    pub fn oldest_age_ms(&self, now: Instant) -> u64 {
+        self.packets.front().map_or(0, |(time, _)| {
+            now.saturating_duration_since(*time)
+                .as_millis()
+                .min(u64::MAX as u128) as u64
+        })
+    }
     pub fn pop(&mut self) -> Option<Vec<u8>> {
         self.packets.pop_front().map(|(_, p)| p)
     }
@@ -66,6 +73,7 @@ mod tests {
         assert!(q.push(now, vec![99]));
         assert_eq!(q.len(), MAX_PACKETS);
         assert_eq!(q.front(), Some([1].as_slice()));
+        assert_eq!(q.oldest_age_ms(now + Duration::from_millis(49)), 49);
         assert_eq!(q.expire(now + Duration::from_millis(49)), 0);
         assert_eq!(
             q.expire(now + Duration::from_millis(50)),

@@ -38,7 +38,7 @@ impl Events {
             let safe = match value["event"].as_str() {
                 Some("state") => Some(json!({"event":"state","phase":value["phase"]})),
                 Some("metrics") => Some(
-                    json!({"event":"metrics","kbps":value["kbps"],"feedback":value["feedback"],"packets":value["packets"],"captured":value["captured"],"encoded":value["encoded"],"produced":value["produced"],"queue_dropped":value["queue_dropped"],"queue_len":value["queue_len"],"send_timeouts":value["send_timeouts"],"send_would_block":value["send_would_block"],"send_memory_errors":value["send_memory_errors"],"width":value["width"],"height":value["height"],"fps":value["fps"]}),
+                    json!({"event":"metrics","kbps":value["kbps"],"feedback":value["feedback"],"packets":value["packets"],"captured":value["captured"],"encoded":value["encoded"],"produced":value["produced"],"queue_dropped":value["queue_dropped"],"queue_expired":value["queue_expired"],"queue_overflow":value["queue_overflow"],"queue_len":value["queue_len"],"queue_peak":value["queue_peak"],"queue_oldest_ms":value["queue_oldest_ms"],"packet_max_bytes":value["packet_max_bytes"],"keyframe_requests":value["keyframe_requests"],"blocked_current_ms":value["blocked_current_ms"],"blocked_max_ms":value["blocked_max_ms"],"send_timeouts":value["send_timeouts"],"send_would_block":value["send_would_block"],"send_memory_errors":value["send_memory_errors"],"width":value["width"],"height":value["height"],"fps":value["fps"]}),
                 ),
                 Some("trace") => Some(value.clone()),
                 _ => None,
