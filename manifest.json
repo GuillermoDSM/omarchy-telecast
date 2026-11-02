@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "astro67.miracast",
+  "name": "Miracast",
+  "version": "0.1.0",
+  "author": "astro67",
+  "license": "MIT",
+  "description": "Experimental native Miracast sender: extended desktop up to 1080p",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "MiracastWidget.qml"},
+  "barWidget": {
+    "displayName": "Miracast",
+    "description": "Extend the desktop over Wi-Fi Direct (experimental, video only)",
+    "category": "Connectivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}
