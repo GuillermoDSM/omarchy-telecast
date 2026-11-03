@@ -22,12 +22,12 @@ Ui.BarWidget {
   function close() { root.popupOpen = false }
   function toggle() {
     root.popupOpen = !root.popupOpen
-    if (root.popupOpen && !root.controller.busy) root.controller.discover()
+    if (root.popupOpen && !root.controller.busy && !root.controller.discovering) root.controller.discover()
   }
 
   function activateReceiver(key) {
     if (root.controller.busy) {
-      if (root.controller.selectedKey === key && root.controller.phase !== "searching") root.controller.stop()
+      if (root.controller.selectedKey === key) root.controller.stop()
       return
     }
     var receiver = null
@@ -142,18 +142,18 @@ Ui.BarWidget {
           spacing: Style.space(8)
           Ui.Button {
             width: (parent.width - parent.spacing) / 2
-            text: "Buscar TV"
+            text: root.controller.receivers.length > 0 ? "Actualizar" : "Buscar TV"
             bordered: true
-            enabled: !root.controller.busy
+            enabled: !root.controller.busy && !root.controller.discovering
             foreground: root.foreground
             onClicked: root.controller.discover()
           }
           Ui.Button {
             width: (parent.width - parent.spacing) / 2
-            text: root.controller.phase === "searching" ? "Cancelar búsqueda" : "Cancelar conexión"
-            visible: root.controller.busy && !root.controller.streaming
+            text: root.controller.discovering ? "Cancelar búsqueda" : "Cancelar conexión"
+            visible: root.controller.discovering || (root.controller.busy && !root.controller.streaming)
             bordered: true
-            enabled: root.controller.busy
+            enabled: visible
             foreground: root.foreground
             accent: Commons.Color.urgent
             onClicked: root.controller.stop()
@@ -163,7 +163,9 @@ Ui.BarWidget {
         Text {
           visible: root.controller.receivers.length === 0
           width: parent.width
-          text: "Pon la TV en Compartir pantalla. Selecciona una TV para conectar."
+          text: root.controller.discovering
+            ? "Buscando TVs AirPlay y Miracast…"
+            : "Pon la TV en Compartir pantalla. Selecciona una TV para conectar."
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: Qt.darker(root.foreground, 1.4)
@@ -203,7 +205,7 @@ Ui.BarWidget {
               }
               Text {
                 width: parent.width
-                text: root.controller.busy && root.controller.selectedKey === receiverRow.modelData.key && root.controller.phase !== "searching"
+                text: root.controller.busy && root.controller.selectedKey === receiverRow.modelData.key
                   ? "Desconectar"
                   : Model.protocolLabel(receiverRow.modelData.protocol) + (receiverRow.modelData.protocol === "airplay"
                     ? (receiverRow.modelData.model ? " · " + receiverRow.modelData.model : " · Conectar")
@@ -217,7 +219,7 @@ Ui.BarWidget {
             MouseArea {
               anchors.fill: parent
               enabled: (!root.controller.busy && (receiverRow.modelData.protocol === "airplay" ? root.controller.airplayReady : root.controller.prerequisitesReady))
-                || (root.controller.busy && root.controller.selectedKey === receiverRow.modelData.key && root.controller.phase !== "searching")
+                || (root.controller.busy && root.controller.selectedKey === receiverRow.modelData.key)
               cursorShape: Qt.PointingHandCursor
               onClicked: { receiverRow.forceActiveFocus(); root.activateReceiver(receiverRow.modelData.key) }
             }
@@ -308,7 +310,7 @@ Ui.BarWidget {
           onClicked: {
             root.showDiagnostics = !root.showDiagnostics
             if (!root.showDiagnostics) root.controller.testPattern = false
-            if (root.showDiagnostics && !root.controller.busy) root.controller.send({command: "doctor"})
+            if (root.showDiagnostics && !root.controller.busy && !root.controller.discovering) root.controller.send({command: "doctor"})
           }
         }
 

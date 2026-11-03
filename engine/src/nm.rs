@@ -118,7 +118,7 @@ impl Manager {
         Ok(true)
     }
 
-    pub async fn peers(&self, scan: bool) -> Result<Vec<Peer>> {
+    async fn p2p_devices(&self) -> Result<Vec<(String, String)>> {
         let mut devices = Vec::new();
         for path in self.devices().await? {
             let dev = proxy(&self.connection, path.as_str(), DEVICE).await?;
@@ -133,15 +133,32 @@ impl Manager {
             !devices.is_empty(),
             "NetworkManager no ofrece un dispositivo Wi-Fi Direct"
         );
+        Ok(devices)
+    }
+
+    async fn start_find_on(&self, devices: &[(String, String)]) -> Result<()> {
+        for (path, _) in devices {
+            let options = HashMap::from([("timeout", Value::from(8i32))]);
+            let _: () = proxy(&self.connection, path, P2P)
+                .await?
+                .call("StartFind", &(options,))
+                .await
+                .context("No se pudo buscar receptores Wi-Fi Direct")?;
+        }
+        Ok(())
+    }
+
+    /// Starts a bounded Wi-Fi Direct discovery and returns immediately. The
+    /// caller can poll `peers(false)` while NetworkManager fills the peer list.
+    pub async fn start_find(&self) -> Result<()> {
+        let devices = self.p2p_devices().await?;
+        self.start_find_on(&devices).await
+    }
+
+    pub async fn peers(&self, scan: bool) -> Result<Vec<Peer>> {
+        let devices = self.p2p_devices().await?;
         if scan {
-            for (path, _) in &devices {
-                let options = HashMap::from([("timeout", Value::from(8i32))]);
-                let _: () = proxy(&self.connection, path, P2P)
-                    .await?
-                    .call("StartFind", &(options,))
-                    .await
-                    .context("No se pudo buscar receptores Wi-Fi Direct")?;
-            }
+            self.start_find_on(&devices).await?;
             // NetworkManager ends this bounded scan itself. Do not StopFind a
             // discovery that another application might still need.
             sleep(Duration::from_secs(8)).await;

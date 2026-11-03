@@ -16,6 +16,7 @@ QtObject {
   property string phase: "offline"
   property string detail: "AirPlay y Miracast experimentales · el audio AirPlay también suena en la laptop"
   property bool busy: false
+  property bool discovering: false
   property var receivers: []
   property string selectedKey: ""
   property var checks: []
@@ -67,9 +68,11 @@ QtObject {
   }
 
   function discover() {
-    if (root.busy) return
+    if (root.busy || root.discovering) return
     root.warning = ""
-    root.busy = true
+    root.receivers = []
+    root.selectedKey = ""
+    root.discovering = true
     root.phase = "searching"
     root.send({command: "scan"})
   }
@@ -91,6 +94,7 @@ QtObject {
     root.warning = ""
     root.pinRequired = false
     root.airplayAudio = false
+    root.discovering = false
     root.busy = true
     root.phase = receiver.protocol === "airplay" ? "connecting" : "starting"
     root.send({
@@ -129,6 +133,7 @@ QtObject {
         root.phase = String(event.phase || "error")
         root.detail = Model.plain(event.detail, 1200)
         root.busy = Boolean(event.busy)
+        root.discovering = event.discovering === true || root.phase === "searching"
         if (root.phase !== "pairing") root.pinRequired = false
         root.appendHistory(root.detail)
       } else if (event.event === "peers") {
@@ -171,6 +176,7 @@ QtObject {
     onExited: function (exitCode, exitStatus) {
       root.engineReady = false
       root.busy = false
+      root.discovering = false
       root.queued = []
       root.pinRequired = false
       root.phase = exitCode === 0 ? "offline" : "error"
@@ -184,7 +190,8 @@ QtObject {
     function stop(): string { root.stop(); return "ok" }
     function status(): string {
       return JSON.stringify({phase: root.phase, detail: root.detail, busy: root.busy,
-        receivers: root.receivers, selectedKey: root.selectedKey, pinRequired: root.pinRequired,
+        discovering: root.discovering, receivers: root.receivers,
+        selectedKey: root.selectedKey, pinRequired: root.pinRequired,
         kbps: root.kbps, feedback: root.feedback,
         warning: root.warning, logPath: root.logPath})
     }

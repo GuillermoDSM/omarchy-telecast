@@ -13,6 +13,7 @@ mod stdio;
 mod wfd;
 
 use std::{
+    collections::HashSet,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -24,9 +25,13 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::mpsc,
     task::JoinHandle,
-    time::timeout,
+    time::{Instant, sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
+
+const DISCOVERY_WINDOW: Duration = Duration::from_secs(12);
+const DISCOVERY_POLL: Duration = Duration::from_millis(500);
+const DISCOVERY_SOURCE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct Events(
@@ -60,7 +65,15 @@ impl Events {
         Self(self.0.clone(), Some(Arc::new(Mutex::new(log))))
     }
     fn state(&self, phase: &str, detail: &str) {
-        self.send(json!({"event":"state","phase":phase,"detail":detail,"busy":!matches!(phase,"idle"|"error")}));
+        let discovering = phase == "searching";
+        let busy = !matches!(phase, "idle" | "error" | "searching");
+        self.send(json!({
+            "event":"state",
+            "phase":phase,
+            "detail":detail,
+            "busy":busy,
+            "discovering":discovering
+        }));
     }
     fn warning(&self, detail: &str) {
         self.send(json!({"event":"warning","detail":detail}));
@@ -91,6 +104,17 @@ enum Request {
     },
     Stop,
     Quit,
+}
+
+enum DiscoveryEvent {
+    Peers { generation: u64, peers: Vec<Value> },
+    Warning { generation: u64, detail: String },
+    Finished { generation: u64, peers: Vec<Value> },
+}
+
+struct DiscoveryJob {
+    cancel: CancellationToken,
+    task: JoinHandle<()>,
 }
 
 async fn doctor() -> Value {
@@ -170,31 +194,20 @@ async fn read_line(
     }
 }
 
-async fn collect_peers(manager: &airplay::Manager) -> (Vec<Value>, Vec<String>) {
-    let (airplay_result, miracast_result) = tokio::join!(
-        manager.scan(),
-        timeout(Duration::from_secs(12), async {
-            nm::Manager::new().await?.peers(true).await
+fn miracast_values(found: Vec<nm::Peer>) -> Vec<Value> {
+    found
+        .into_iter()
+        .filter_map(|peer| {
+            let mut value = serde_json::to_value(peer).ok()?;
+            value["protocol"] = json!("miracast");
+            Some(value)
         })
-    );
-    let mut peers = Vec::new();
-    let mut warnings = Vec::new();
-    match airplay_result {
-        Ok(mut found) => peers.append(&mut found),
-        Err(error) => warnings.push(format!("AirPlay: {error:#}")),
-    }
-    match miracast_result {
-        Ok(Ok(found)) => {
-            for peer in found {
-                if let Ok(mut value) = serde_json::to_value(peer) {
-                    value["protocol"] = json!("miracast");
-                    peers.push(value);
-                }
-            }
-        }
-        Ok(Err(error)) => warnings.push(format!("Miracast: {error:#}")),
-        Err(_) => warnings.push("Miracast: la búsqueda superó 12 segundos".to_string()),
-    }
+        .collect()
+}
+
+fn merge_peer_lists(airplay: Vec<Value>, miracast: Vec<Value>) -> Vec<Value> {
+    let mut peers = airplay;
+    peers.extend(miracast);
     peers.sort_by(|left, right| {
         let left_airplay = left["protocol"] == "airplay";
         let right_airplay = right["protocol"] == "airplay";
@@ -202,12 +215,225 @@ async fn collect_peers(manager: &airplay::Manager) -> (Vec<Value>, Vec<String>) 
             .cmp(&left_airplay)
             .then_with(|| left["name"].as_str().cmp(&right["name"].as_str()))
     });
-    (peers, warnings)
+    peers
+}
+
+fn peer_signature(peers: &[Value]) -> String {
+    peers
+        .iter()
+        .map(|peer| {
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}",
+                peer["protocol"].as_str().unwrap_or_default(),
+                peer["mac"].as_str().unwrap_or_default(),
+                peer["ip"].as_str().unwrap_or_default(),
+                peer["port"].as_u64().unwrap_or(0),
+                peer["name"].as_str().unwrap_or_default(),
+                peer["model"].as_str().unwrap_or_default(),
+                peer["wfd"].as_bool().unwrap_or(false)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn publish_peers(
+    tx: &mpsc::Sender<DiscoveryEvent>,
+    generation: u64,
+    airplay: &[Value],
+    miracast: &[Value],
+    last_signature: &mut String,
+) {
+    let peers = merge_peer_lists(airplay.to_vec(), miracast.to_vec());
+    let signature = peer_signature(&peers);
+    if signature == *last_signature {
+        return;
+    }
+    if tx
+        .try_send(DiscoveryEvent::Peers { generation, peers })
+        .is_ok()
+    {
+        *last_signature = signature;
+    }
+}
+
+fn publish_warning(
+    tx: &mpsc::Sender<DiscoveryEvent>,
+    generation: u64,
+    warnings: &mut HashSet<String>,
+    detail: String,
+) {
+    if !warnings.insert(detail.clone()) {
+        return;
+    }
+    let _ = tx.try_send(DiscoveryEvent::Warning { generation, detail });
+}
+
+async fn discover(
+    airplay: Arc<airplay::Manager>,
+    tx: mpsc::Sender<DiscoveryEvent>,
+    generation: u64,
+    cancel: CancellationToken,
+) {
+    let deadline = Instant::now() + DISCOVERY_WINDOW;
+    let mut warnings = HashSet::new();
+    let mut last_signature = String::new();
+    let mut airplay_peers = Vec::new();
+    let mut miracast_peers = Vec::new();
+
+    match timeout(DISCOVERY_SOURCE_TIMEOUT, airplay.devices()).await {
+        Ok(Ok(found)) => {
+            airplay_peers = found;
+            publish_peers(
+                &tx,
+                generation,
+                &airplay_peers,
+                &miracast_peers,
+                &mut last_signature,
+            );
+        }
+        Ok(Err(error)) => publish_warning(
+            &tx,
+            generation,
+            &mut warnings,
+            format!("AirPlay: {error:#}"),
+        ),
+        Err(_) => publish_warning(
+            &tx,
+            generation,
+            &mut warnings,
+            "AirPlay: la consulta superó 3 segundos".to_string(),
+        ),
+    }
+
+    let nm = match timeout(DISCOVERY_SOURCE_TIMEOUT, nm::Manager::new()).await {
+        Ok(Ok(manager)) => {
+            match timeout(DISCOVERY_SOURCE_TIMEOUT, manager.start_find()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => publish_warning(
+                    &tx,
+                    generation,
+                    &mut warnings,
+                    format!("Miracast: {error:#}"),
+                ),
+                Err(_) => publish_warning(
+                    &tx,
+                    generation,
+                    &mut warnings,
+                    "Miracast: el escaneo superó 3 segundos".to_string(),
+                ),
+            }
+            Some(manager)
+        }
+        Ok(Err(error)) => {
+            publish_warning(
+                &tx,
+                generation,
+                &mut warnings,
+                format!("Miracast: {error:#}"),
+            );
+            None
+        }
+        Err(_) => {
+            publish_warning(
+                &tx,
+                generation,
+                &mut warnings,
+                "Miracast: la conexión con NetworkManager superó 3 segundos".to_string(),
+            );
+            None
+        }
+    };
+
+    loop {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let airplay_poll = async {
+            match timeout(DISCOVERY_SOURCE_TIMEOUT, airplay.devices()).await {
+                Ok(result) => result,
+                Err(_) => bail!("la consulta superó 3 segundos"),
+            }
+        };
+        let miracast_poll = async {
+            let Some(manager) = nm.as_ref() else {
+                return None;
+            };
+            match timeout(DISCOVERY_SOURCE_TIMEOUT, manager.peers(false)).await {
+                Ok(result) => Some(result),
+                Err(_) => Some(Err(anyhow::anyhow!("la consulta superó 3 segundos"))),
+            }
+        };
+        let (airplay_result, miracast_result) = tokio::join!(airplay_poll, miracast_poll);
+        match airplay_result {
+            Ok(found) => airplay_peers = found,
+            Err(error) => publish_warning(
+                &tx,
+                generation,
+                &mut warnings,
+                format!("AirPlay: {error:#}"),
+            ),
+        }
+        if let Some(result) = miracast_result {
+            match result {
+                Ok(found) => miracast_peers = miracast_values(found),
+                Err(error) => publish_warning(
+                    &tx,
+                    generation,
+                    &mut warnings,
+                    format!("Miracast: {error:#}"),
+                ),
+            }
+        }
+        publish_peers(
+            &tx,
+            generation,
+            &airplay_peers,
+            &miracast_peers,
+            &mut last_signature,
+        );
+
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = sleep(DISCOVERY_POLL) => {}
+        }
+    }
+
+    let peers = merge_peer_lists(airplay_peers, miracast_peers);
+    let _ = tx
+        .send(DiscoveryEvent::Finished { generation, peers })
+        .await;
+}
+
+async fn collect_peers(manager: &airplay::Manager) -> (Vec<Value>, Vec<String>) {
+    let (airplay_result, miracast_result) = tokio::join!(
+        manager.scan(),
+        timeout(Duration::from_secs(12), async {
+            nm::Manager::new().await?.peers(true).await
+        })
+    );
+    let mut airplay = Vec::new();
+    let mut miracast = Vec::new();
+    let mut warnings = Vec::new();
+    match airplay_result {
+        Ok(found) => airplay = found,
+        Err(error) => warnings.push(format!("AirPlay: {error:#}")),
+    }
+    match miracast_result {
+        Ok(Ok(found)) => miracast = miracast_values(found),
+        Ok(Err(error)) => warnings.push(format!("Miracast: {error:#}")),
+        Err(_) => warnings.push("Miracast: la búsqueda superó 12 segundos".to_string()),
+    }
+    (merge_peer_lists(airplay, miracast), warnings)
 }
 
 async fn serve() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(128);
     let events = Events(tx, None);
+    let (scan_tx, mut scan_rx) = mpsc::channel(32);
     let airplay = Arc::new(airplay::Manager::new()?);
     if !airplay.is_streaming().await {
         audio::cleanup_stale().await;
@@ -222,6 +448,8 @@ async fn serve() -> Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut job: Option<(CancellationToken, JoinHandle<()>)> = None;
     let mut job_terminal = false;
+    let mut discovery: Option<DiscoveryJob> = None;
+    let mut scan_generation: u64 = 0;
     events.send(json!({"event":"ready","version":env!("CARGO_PKG_VERSION")}));
     events.state(
         "idle",
@@ -246,6 +474,35 @@ async fn serve() -> Result<()> {
                 }).await;
                 if !matches!(written,Ok(Ok(()))) { break; }
             }
+            Some(scan_event) = scan_rx.recv() => {
+                match scan_event {
+                    DiscoveryEvent::Peers { generation, peers }
+                        if generation == scan_generation && discovery.is_some() =>
+                    {
+                        events.send(json!({"event":"peers","peers":peers}));
+                    }
+                    DiscoveryEvent::Warning { generation, detail }
+                        if generation == scan_generation && discovery.is_some() =>
+                    {
+                        events.warning(&detail);
+                    }
+                    DiscoveryEvent::Finished { generation, peers }
+                        if generation == scan_generation && discovery.is_some() =>
+                    {
+                        events.send(json!({"event":"peers","peers":peers}));
+                        events.state("idle",if peers.is_empty() {
+                            "No se encontraron receptores. Comprueba que la TV esté en AirPlay o Compartir pantalla"
+                        } else {
+                            "Búsqueda terminada. Elige una TV para conectar"
+                        });
+                        if let Some(done) = discovery.take() {
+                            let _ = done.task.await;
+                        }
+                        scan_generation = scan_generation.wrapping_add(1);
+                    }
+                    _ => {}
+                }
+            }
             line = read_line(&mut stdin, &mut command_buffer) => {
                 let line = match line { Ok(Some(line)) => line, Ok(None) => break, Err(error) => { events.warning(&error.to_string()); break; } };
                 let request = match serde_json::from_str::<Request>(&line) { Ok(request) => request,Err(error) => { events.warning(&format!("Comando inválido: {error}")); continue; } };
@@ -259,43 +516,61 @@ async fn serve() -> Result<()> {
                 match request {
                     Request::Quit => break,
                     Request::Stop => {
-                        if let Some((cancel,_)) = &job { events.state("stopping","Cancelando y liberando los recursos de esta sesión"); cancel.cancel(); }
+                        if let Some((cancel,_)) = &job {
+                            events.state("stopping","Cancelando y liberando los recursos de esta sesión");
+                            cancel.cancel();
+                        } else if let Some(mut active) = discovery.take() {
+                            active.cancel.cancel();
+                            if timeout(Duration::from_secs(1), &mut active.task).await.is_err() {
+                                active.task.abort();
+                            }
+                            scan_generation = scan_generation.wrapping_add(1);
+                            events.state("idle","Búsqueda cancelada");
+                        }
                     }
-                    Request::Doctor if job.is_none() => {
+                    Request::Doctor if job.is_none() && discovery.is_none() => {
                         events.send(timeout(Duration::from_secs(12),doctor()).await.context("El diagnóstico excedió el tiempo límite")?);
                     }
                     Request::Scan if job.is_none() => {
-                        let cancel = CancellationToken::new();
-                        let token = cancel.clone();
-                        let events = events.clone();
-                        let airplay = airplay.clone();
-                        let task = tokio::spawn(async move {
+                        if discovery.as_ref().is_some_and(|active| active.task.is_finished()) {
+                            discovery = None;
+                            scan_generation = scan_generation.wrapping_add(1);
+                        }
+                        if discovery.is_some() {
+                            events.warning("La búsqueda ya está en curso");
+                        } else {
+                            scan_generation = scan_generation.wrapping_add(1);
+                            let generation = scan_generation;
+                            let cancel = CancellationToken::new();
+                            let task = tokio::spawn(discover(
+                                airplay.clone(),
+                                scan_tx.clone(),
+                                generation,
+                                cancel.clone(),
+                            ));
+                            discovery = Some(DiscoveryJob { cancel, task });
+                            events.send(json!({"event":"peers","peers":[]}));
                             events.state("searching","Buscando receptores AirPlay y Miracast");
-                            let (peers, warnings) = tokio::select! {
-                                _ = token.cancelled() => return events.state("idle","Búsqueda cancelada"),
-                                result = collect_peers(&airplay) => result,
-                            };
-                            events.send(json!({"event":"peers","peers":peers}));
-                            if !warnings.is_empty() {
-                                events.warning(&warnings.join(" · "));
-                            }
-                            events.state("idle",if peers.is_empty() {
-                                "No se encontraron receptores. Comprueba que la TV esté en AirPlay o Compartir pantalla"
-                            } else {
-                                "Búsqueda terminada. Elige una TV para conectar"
-                            });
-                        });
-                        job_terminal = false;
-                        job = Some((cancel,task));
+                        }
                     }
-                    Request::Pin { pin } => {
+                    Request::Pin { pin } if job.is_some() => {
                         if pin.is_empty() || pin.len() > 128 {
                             events.warning("El PIN o contraseña no es válido");
                         } else if let Err(error) = airplay.pin(&pin).await {
                             events.warning(&format!("No se pudo enviar el PIN: {error:#}"));
                         }
                     }
+                    Request::Pin { .. } => {
+                        events.warning("No hay una conexión AirPlay activa");
+                    }
                     Request::Connect { mac,protocol,ip,port,name,test } if job.is_none() => {
+                        if let Some(mut active) = discovery.take() {
+                            active.cancel.cancel();
+                            if timeout(Duration::from_secs(1), &mut active.task).await.is_err() {
+                                active.task.abort();
+                            }
+                            scan_generation = scan_generation.wrapping_add(1);
+                        }
                         let protocol = protocol.unwrap_or_else(|| "miracast".to_string());
                         if protocol == "airplay" {
                             if ip.parse::<std::net::IpAddr>().is_err() {
@@ -323,7 +598,7 @@ async fn serve() -> Result<()> {
                                     cancel.clone(),
                                 ));
                                 job_terminal = false;
-                        job = Some((cancel,task));
+                                job = Some((cancel,task));
                             }
                         } else if protocol == "miracast" {
                             let cancel = CancellationToken::new();
@@ -337,7 +612,7 @@ async fn serve() -> Result<()> {
                             session_events.trace("session",if test {"pattern"} else {"extended"});
                             let task = tokio::spawn(session::run(mac,test,session_events,cancel.clone()));
                             job_terminal = false;
-                        job = Some((cancel,task));
+                            job = Some((cancel,task));
                         } else {
                             events.state("error","Protocolo de envío desconocido");
                         }
@@ -349,6 +624,15 @@ async fn serve() -> Result<()> {
     }
     // EOF (widget removal/hot-reload), SIGTERM, Ctrl+C and Quit all take the
     // same cleanup path. Do not abort the session task before it can clean up.
+    if let Some(mut active) = discovery.take() {
+        active.cancel.cancel();
+        if timeout(Duration::from_secs(1), &mut active.task)
+            .await
+            .is_err()
+        {
+            active.task.abort();
+        }
+    }
     if let Some((cancel, task)) = job {
         cancel.cancel();
         let _ = timeout(Duration::from_secs(15), task).await;
@@ -411,6 +695,25 @@ mod tests {
         let oversized = vec![b'x'; 20000];
         let mut reader = BufReader::new(oversized.as_slice());
         assert!(read_line(&mut reader, &mut Vec::new()).await.is_err());
+    }
+
+    #[test]
+    fn peer_lists_put_airplay_first_and_track_identity() {
+        let airplay = vec![json!({
+            "protocol":"airplay","mac":"68:72:C3:A8:40:DF","ip":"192.168.1.139",
+            "port":50835,"name":"Samsung","model":"UTU7000","wfd":false
+        })];
+        let miracast = vec![json!({
+            "protocol":"miracast","mac":"00:11:22:33:44:55","name":"Other",
+            "model":"","wfd":true
+        })];
+        let merged = merge_peer_lists(airplay, miracast);
+        assert_eq!(merged[0]["protocol"], "airplay");
+        assert_eq!(merged[1]["protocol"], "miracast");
+        let signature = peer_signature(&merged);
+        assert!(signature.contains("68:72:C3:A8:40:DF"));
+        assert!(signature.contains("50835"));
+        assert_ne!(signature, peer_signature(&merged[..1]));
     }
 
     #[test]

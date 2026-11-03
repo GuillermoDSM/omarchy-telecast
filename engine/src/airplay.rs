@@ -67,15 +67,19 @@ impl Manager {
             .is_ok_and(|status| status["state"] == "streaming")
     }
 
-    pub async fn scan(&self) -> Result<Vec<Value>> {
+    pub async fn devices(&self) -> Result<Vec<Value>> {
         self.ensure(false).await?;
+        let response = self
+            .request(json!({"cmd":"devices"}), REQUEST_TIMEOUT)
+            .await?;
+        Ok(map_devices(&response))
+    }
+
+    pub async fn scan(&self) -> Result<Vec<Value>> {
         let deadline = Instant::now() + SCAN_WAIT;
         let mut devices;
         loop {
-            let response = self
-                .request(json!({"cmd":"devices"}), REQUEST_TIMEOUT)
-                .await?;
-            devices = map_devices(&response);
+            devices = self.devices().await?;
             if !devices.is_empty() || Instant::now() >= deadline {
                 break;
             }
@@ -432,7 +436,7 @@ pub async fn doctor() -> Vec<Value> {
     checks.push(json!({
         "name": "Audio AirPlay",
         "ok": pactl,
-        "detail": if pactl { "pactl disponible; la TV aparecerá como salida de audio temporal" } else { "Falta pactl (libpulse)" },
+        "detail": if pactl { "pactl disponible; el audio se captura de la salida predeterminada" } else { "Falta pactl (libpulse)" },
         "group": "airplay",
     }));
     checks

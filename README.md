@@ -15,6 +15,10 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 ## Implementado
 
 - Widget de barra, receptores AirPlay y Miracast, y diagnóstico por etapas.
+- Búsqueda incremental: la lista se vacía al iniciar, los receptores aparecen
+  en el widget mientras el motor sigue buscando, y se puede conectar en cuanto
+  aparece uno. La búsqueda se cancela al iniciar la conexión y su ventana es de
+  12 segundos.
 - Backend AirPlay mediante DoubleTake en modo daemon: descubrimiento mDNS,
   emparejamiento por PIN, credenciales privadas por TV y estado en vivo.
 - El volumen de la TV no se modifica al iniciar AirPlay. DoubleTake captura el
@@ -58,6 +62,9 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 
 - Solo audio AAC estéreo: si la TV solo anuncia LPCM o faltan componentes,
   se avisa y se intenta vídeo sin audio; algunas TV pueden rechazarlo.
+- La búsqueda AirPlay se actualiza en cuanto mDNS ve la TV. Miracast depende del
+  barrido P2P de NetworkManager, que puede tardar hasta 8 segundos en publicar
+  el receptor; mientras tanto el widget sigue respondiendo y permite cancelar.
 - En AirPlay y Miracast el audio se captura de la salida predeterminada y se
   reproduce también en la laptop. Si cambias de salida durante la sesión, la
   captura sigue la nueva salida; para oír solo la TV, silencia la laptop. No se
