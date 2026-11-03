@@ -19,7 +19,7 @@ Panel {
   readonly property var service: Cast.MiracastService
   readonly property color foreground: root.barForeground
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-  readonly property bool active: service.busy || service.discovering
+  readonly property bool active: service.enabled
 
   property bool showDiagnostics: false
   property int phraseIndex: 0
@@ -40,6 +40,8 @@ Panel {
   ]
   readonly property bool rotatingPhrases: service.discovering
   readonly property string heroStatusText: {
+    if (!service.enabled) return "Desactivado"
+    if (service.shuttingDown) return "Desconectando"
     if (service.phase === "error") return "Error"
     if (service.discovering) return activePhrases[phraseIndex % activePhrases.length]
     if (service.busy) return service.statusLabel
@@ -77,8 +79,7 @@ Panel {
   implicitHeight: button.implicitHeight
 
   function toggleActive() {
-    if (service.busy || service.discovering) service.stop()
-    else service.discover()
+    service.setEnabled(!service.enabled)
   }
 
   function activateReceiver(key) {
@@ -100,7 +101,7 @@ Panel {
   function toggleDiagnostics() {
     showDiagnostics = !showDiagnostics
     if (!showDiagnostics) service.testPattern = false
-    if (showDiagnostics && !service.busy && !service.discovering)
+    if (showDiagnostics && service.enabled && !service.busy && !service.discovering)
       service.send({command: "doctor"})
   }
 
@@ -232,7 +233,7 @@ Panel {
 
   onOpenedChanged: {
     if (!opened) return
-    if (!service.busy && !service.discovering) service.discover()
+    if (service.enabled && !service.busy && !service.discovering) service.discover()
     if (service.busy) {
       focusSection = "connected"
       selectedIndex = 0
@@ -301,7 +302,7 @@ Panel {
     useActiveColor: true
     activeColor: Commons.Color.accent
     onPressed: function(mouseButton) {
-      if (mouseButton === Qt.MiddleButton) root.service.stop()
+      if (mouseButton === Qt.MiddleButton) root.service.setEnabled(false)
       else if (mouseButton === Qt.RightButton) root.toggleActive()
       else root.toggle()
     }
@@ -366,7 +367,7 @@ Panel {
 
             PanelToolTip {
               visible: powerSwitch.containsMouse
-              text: root.active ? "Detener" : "Buscar TVs"
+              text: root.active ? "Desactivar envío de pantalla" : "Activar envío de pantalla"
               fontFamily: root.fontFamily
             }
           }
@@ -557,7 +558,8 @@ Panel {
         Text {
           width: parent.width
           visible: root.connectedReceiver === null && root.availableReceivers.length === 0
-          text: root.service.discovering
+          text: !root.service.enabled ? "Activa el envío de pantalla para buscar TVs."
+            : root.service.discovering
             ? "Buscando TVs AirPlay y Miracast…"
             : "Pon la TV en AirPlay o Compartir pantalla. Selecciona una TV para conectar."
           textFormat: Text.PlainText

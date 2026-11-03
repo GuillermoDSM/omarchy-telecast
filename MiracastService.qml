@@ -12,6 +12,9 @@ QtObject {
 
   property int users: 0
   property bool engineReady: false
+  // The power switch is independent of whether a scan or session is active.
+  property bool enabled: true
+  property bool shuttingDown: false
   property var queued: []
   property string phase: "offline"
   property string detail: "AirPlay y Miracast experimentales · el audio AirPlay también suena en la laptop"
@@ -57,6 +60,7 @@ QtObject {
   }
 
   function send(command) {
+    if (!root.enabled && command.command !== "quit") return
     if (command.command === "stop") root.queued = []
     if (root.engineReady && backend.running) {
       backend.write(JSON.stringify(command) + "\n")
@@ -68,7 +72,7 @@ QtObject {
   }
 
   function discover() {
-    if (root.busy || root.discovering) return
+    if (!root.enabled || root.shuttingDown || root.busy || root.discovering) return
     root.warning = ""
     root.receivers = []
     root.selectedKey = ""
@@ -86,7 +90,7 @@ QtObject {
 
   function connectSelected() {
     var receiver = root.selectedReceiver()
-    if (root.busy || !receiver) return
+    if (!root.enabled || root.shuttingDown || root.busy || !receiver) return
     if (receiver.protocol === "airplay" ? !root.airplayReady : !root.prerequisitesReady) return
     root.kbps = 0
     root.feedback = false
@@ -119,9 +123,37 @@ QtObject {
     root.send({command: "stop"})
   }
 
+  function setEnabled(on) {
+    if (root.enabled === on) return
+    root.enabled = on
+    root.receivers = []
+    root.selectedKey = ""
+    root.queued = []
+    root.pinRequired = false
+    root.warning = ""
+    if (!on) {
+      root.discovering = false
+      root.busy = false
+      root.phase = "offline"
+      root.detail = "Envío de pantalla desactivado"
+      if (backend.running) {
+        root.shuttingDown = true
+        // Quit follows the engine's cooperative session and daemon cleanup.
+        backend.write(JSON.stringify({command: "quit"}) + "\n")
+      }
+    } else if (!root.shuttingDown) {
+      root.discover()
+    } else {
+      root.phase = "offline"
+      root.detail = "Esperando a que termine la desconexión"
+    }
+  }
+
   function receive(line) {
     try {
       var event = JSON.parse(line)
+      // Ignore late discovery/session events while the old engine shuts down.
+      if (root.shuttingDown || !root.enabled) return
       if (event.event === "ready") {
         root.engineReady = true
         // Diagnostics never scan or activate a network connection.
@@ -174,11 +206,21 @@ QtObject {
       onRead: function (line) { root.appendHistory("Motor: " + line) }
     }
     onExited: function (exitCode, exitStatus) {
+      var intentional = root.shuttingDown
+      root.shuttingDown = false
       root.engineReady = false
       root.busy = false
       root.discovering = false
       root.queued = []
       root.pinRequired = false
+      root.receivers = []
+      root.selectedKey = ""
+      if (intentional) {
+        root.phase = "offline"
+        root.detail = root.enabled ? "Motor detenido" : "Envío de pantalla desactivado"
+        if (root.enabled) Qt.callLater(root.discover)
+        return
+      }
       root.phase = exitCode === 0 ? "offline" : "error"
       root.detail = exitCode === 0 ? "Motor detenido" : "El motor terminó con código " + exitCode + ". Abre Diagnóstico para ver detalles."
     }
@@ -188,9 +230,11 @@ QtObject {
     target: "astro67.miracast"
     function scan(): string { root.discover(); return "ok" }
     function stop(): string { root.stop(); return "ok" }
+    function enable(): string { root.setEnabled(true); return "ok" }
+    function disable(): string { root.setEnabled(false); return "ok" }
     function status(): string {
       return JSON.stringify({phase: root.phase, detail: root.detail, busy: root.busy,
-        discovering: root.discovering, receivers: root.receivers,
+        enabled: root.enabled, discovering: root.discovering, receivers: root.receivers,
         selectedKey: root.selectedKey, pinRequired: root.pinRequired,
         kbps: root.kbps, feedback: root.feedback,
         warning: root.warning, logPath: root.logPath})
