@@ -14,7 +14,11 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 
 ## Implementado
 
-- Widget de barra, receptores AirPlay y Miracast, y diagnóstico por etapas.
+- Widget de barra con la misma estructura visual que el panel de Bluetooth de
+  Omarchy: hero con icono, título, estado y switch; secciones de conectado y
+  disponibles; filas, separadores, tooltips y navegación por teclado. No incluye
+  la sección de dispositivos emparejados.
+- Receptores AirPlay y Miracast, y diagnóstico por etapas.
 - Búsqueda incremental: la lista se vacía al iniciar, los receptores aparecen
   en el widget mientras el motor sigue buscando, y se puede conectar en cuanto
   aparece uno. La búsqueda se cancela al iniciar la conexión y su ventana es de
