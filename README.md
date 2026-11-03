@@ -21,6 +21,9 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
   salida PipeWire temporal y se selecciona sola; se puede volver al altavoz o a
   los auriculares desde el panel de audio normal de Omarchy. Al terminar se
   restaura la salida anterior si seguía seleccionada.
+- Cuando el motor observa que la TV deja de ser la salida seleccionada, pausa el
+  audio AirPlay con `FLUSH` y lo reanuda con `RECORD`; el vídeo continúa. El
+  movimiento de los flujos de las aplicaciones lo hace PipeWire.
 - Descubrimiento y conexión P2P por la API D-Bus de NetworkManager.
 - Perfil temporal (`persist=volatile`), ligado a la vida del cliente D-Bus,
   sin ruta predeterminada ni DNS del receptor. No usa un cliente DHCP externo.
@@ -75,6 +78,9 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
   Tailscale ni cambia rutas por su cuenta.
 - AirPlay depende de DoubleTake (LGPL-3.0-or-later), no del motor Rust. Sus
   límites de códecs y latencia son los de ese emisor, no los del motor Miracast.
+- El puerto del servicio AirPlay de la TV puede cambiar entre sesiones. El
+  plugin usa el puerto anunciado por mDNS; si una búsqueda no la encuentra,
+  conviene reintentar antes de concluir que la TV no está disponible.
 - Sin HDCP, UIBC, PIN WPS, transporte TCP de medios ni extensiones de Microsoft.
 - Solo se negocian formatos H.264 CEA compatibles; no 4K/HEVC.
 - Codificación inicial por software. No requiere instalar `gst-plugin-va`.

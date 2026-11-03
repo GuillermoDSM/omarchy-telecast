@@ -111,6 +111,20 @@ impl Manager {
             .map(|_| ())
     }
 
+    async fn pause_audio(&self) -> Result<()> {
+        let response = self
+            .request(json!({"cmd":"pause_audio"}), REQUEST_TIMEOUT)
+            .await?;
+        check(response).map(|_| ())
+    }
+
+    async fn resume_audio(&self) -> Result<()> {
+        let response = self
+            .request(json!({"cmd":"resume_audio"}), REQUEST_TIMEOUT)
+            .await?;
+        check(response).map(|_| ())
+    }
+
     async fn ensure(&self, test: bool) -> Result<()> {
         let mut guard = self.running.lock().await;
         if let Some(running) = guard.as_mut() {
@@ -317,6 +331,7 @@ pub async fn run(
     let mut route: Option<audio::AudioRoute> = None;
     let mut last_state = String::new();
     let mut audio_warned = false;
+    let mut tv_selected = false;
     let result = async {
         manager.ensure(test).await?;
         check_route(&target).await?;
@@ -371,6 +386,7 @@ pub async fn run(
                             if let Some(route) = route.as_mut() {
                                 match route.activate().await {
                                     Ok(()) => {
+                                        tv_selected = true;
                                         events.send(json!({"event":"audio_route","selected":true}));
                                         events.trace(
                                             "audio",
@@ -417,6 +433,33 @@ pub async fn run(
             }
             if state == "idle" {
                 break;
+            }
+            if state == "streaming"
+                && route.is_some()
+            {
+                let selected = audio::tv_selected().await;
+                if selected != tv_selected {
+                    let result = if selected {
+                        manager.resume_audio().await
+                    } else {
+                        manager.pause_audio().await
+                    };
+                    match result {
+                        Ok(()) => events.trace(
+                            "audio",
+                            if selected {
+                                "Audio AirPlay reanudado con RECORD"
+                            } else {
+                                "Audio AirPlay pausado con FLUSH; el vídeo continúa"
+                            },
+                        ),
+                        Err(error) => events.warning(&format!(
+                            "No se pudo {} el audio AirPlay: {error:#}",
+                            if selected { "reanudar" } else { "pausar" }
+                        )),
+                    }
+                    tv_selected = selected;
+                }
             }
             tokio::select! {
                 _ = cancel.cancelled() => break,

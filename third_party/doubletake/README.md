@@ -17,6 +17,10 @@ parche añade:
   y por tanto no cambia el volumen de la TV;
 - `-audio-source`, para capturar explícitamente el monitor de la salida virtual
   que representa la TV en PipeWire;
+- una rama de silencio en el mixer de audio, para que el flujo RTP no se detenga
+  cuando la salida virtual no tiene flujos;
+- pausa y reanudación del audio de espejo con `FLUSH`/`RECORD` y el bit RTP
+  `Marker`, sin tocar el volumen del receptor;
 - tono de prueba a `volume=0.01`, para que el patrón de depuración no suene a
   máximo;
 - las mismas opciones en el modo daemon y en sus pruebas.

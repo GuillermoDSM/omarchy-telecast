@@ -180,10 +180,16 @@ pub async fn available() -> bool {
     command_output("pactl", &["info"]).await.is_ok()
 }
 
+pub async fn tv_selected() -> bool {
+    command_output("pactl", &["get-default-sink"])
+        .await
+        .is_ok_and(|sink| sink.trim() == SINK)
+}
+
 async fn create_sink(description: &str) -> Result<()> {
     let description = sanitize_description(description);
     let config = format!(
-        "{{ factory.name=support.null-audio-sink node.name={SINK} node.description=\"{description}\" node.nick=\"{description}\" media.class=Audio/Sink object.linger=true audio.position=[FL FR] monitor.channel-volumes=true device.icon-name=video-display }}"
+        "{{ factory.name=support.null-audio-sink node.name={SINK} node.description=\"{description}\" node.nick=\"{description}\" media.class=Audio/Sink object.linger=true audio.position=[FL FR] monitor.channel-volumes=true node.always-process=true node.pause-on-idle=false device.icon-name=video-display }}"
     );
     command_output("pw-cli", &["create-node", "adapter", &config])
         .await
