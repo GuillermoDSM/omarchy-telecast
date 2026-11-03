@@ -58,6 +58,12 @@ class WorkerTests(unittest.TestCase):
         event = self.wait_event(lambda e: e.get("phase") == "error")
         self.assertIn("inválida", event["detail"])
         self.assertFalse(event["busy"])
+        self.send({"command": "connect", "protocol": "airplay", "ip": "not-an-ip", "port": 59757})
+        event = self.wait_event(lambda e: e.get("phase") == "error")
+        self.assertIn("AirPlay", event["detail"])
+        self.send({"command": "pin", "pin": ""})
+        event = self.wait_event(lambda e: e.get("event") == "warning")
+        self.assertIn("PIN", event["detail"])
         self.send({"command": "quit"})
         self.assertEqual(self.process.wait(timeout=5), 0)
 

@@ -14,12 +14,17 @@ QtObject {
   property bool engineReady: false
   property var queued: []
   property string phase: "offline"
-  property string detail: "Miracast experimental · escritorio extendido hasta 1080p"
+  property string detail: "AirPlay y Miracast experimentales · audio en la TV cuando esté disponible"
   property bool busy: false
   property var receivers: []
-  property string selectedMac: ""
+  property string selectedKey: ""
   property var checks: []
   property bool prerequisitesReady: false
+  property bool airplayReady: false
+  property bool pinRequired: false
+  property string pinKind: "pin"
+  property bool airplayAudio: false
+  property bool airplayOutput: false
   property bool testPattern: false
   property int kbps: 0
   property bool feedback: false
@@ -70,15 +75,40 @@ QtObject {
     root.send({command: "scan"})
   }
 
+  function selectedReceiver() {
+    for (var i = 0; i < root.receivers.length; i++) {
+      if (root.receivers[i].key === root.selectedKey) return root.receivers[i]
+    }
+    return null
+  }
+
   function connectSelected() {
-    if (root.busy || !root.selectedMac || !root.prerequisitesReady) return
+    var receiver = root.selectedReceiver()
+    if (root.busy || !receiver) return
+    if (receiver.protocol === "airplay" ? !root.airplayReady : !root.prerequisitesReady) return
     root.kbps = 0
     root.feedback = false
     root.resolution = ""
     root.warning = ""
+    root.pinRequired = false
+    root.airplayAudio = false
     root.busy = true
-    root.phase = "starting"
-    root.send({command: "connect", mac: root.selectedMac, test: root.testPattern})
+    root.phase = receiver.protocol === "airplay" ? "connecting" : "starting"
+    root.send({
+      command: "connect",
+      protocol: receiver.protocol,
+      mac: receiver.mac,
+      ip: receiver.ip,
+      port: receiver.port,
+      name: receiver.name,
+      test: root.testPattern
+    })
+  }
+
+  function submitPin(code) {
+    var value = String(code || "").replace(/[\x00-\x1f\x7f]/g, "").slice(0, 128)
+    if (!value) return
+    root.send({command: "pin", pin: value})
   }
 
   function stop() {
@@ -100,14 +130,26 @@ QtObject {
         root.phase = String(event.phase || "error")
         root.detail = Model.plain(event.detail, 1200)
         root.busy = Boolean(event.busy)
+        if (root.phase !== "pairing") root.pinRequired = false
         root.appendHistory(root.detail)
       } else if (event.event === "peers") {
         root.receivers = Model.peers(event.peers)
-        if (!root.receivers.some(function (p) { return p.mac === root.selectedMac }))
-          root.selectedMac = root.receivers.length ? root.receivers[0].mac : ""
+        if (!root.receivers.some(function (p) { return p.key === root.selectedKey }))
+          root.selectedKey = root.receivers.length ? root.receivers[0].key : ""
       } else if (event.event === "diagnostics") {
-        root.checks = Array.isArray(event.checks) ? event.checks.slice(0, 32) : []
+        root.checks = Array.isArray(event.checks) ? event.checks.slice(0, 40) : []
         root.prerequisitesReady = event.ready === true
+        root.airplayReady = event.airplay_ready === true
+      } else if (event.event === "pin_required") {
+        root.pinRequired = true
+        root.pinKind = String(event.kind || "pin")
+      } else if (event.event === "airplay") {
+        root.airplayAudio = event.audio === true
+        root.airplayOutput = false
+        root.feedback = false
+        root.resolution = "AirPlay"
+      } else if (event.event === "audio_route") {
+        root.airplayOutput = event.selected === true
       } else if (event.event === "metrics") {
         root.kbps = Math.max(0, Math.min(8000, Number(event.kbps) || 0))
         root.feedback = event.feedback === true
@@ -134,6 +176,8 @@ QtObject {
       root.engineReady = false
       root.busy = false
       root.queued = []
+      root.pinRequired = false
+      root.airplayOutput = false
       root.phase = exitCode === 0 ? "offline" : "error"
       root.detail = exitCode === 0 ? "Motor detenido" : "El motor terminó con código " + exitCode + ". Abre Diagnóstico para ver detalles."
     }
@@ -145,7 +189,9 @@ QtObject {
     function stop(): string { root.stop(); return "ok" }
     function status(): string {
       return JSON.stringify({phase: root.phase, detail: root.detail, busy: root.busy,
-        receivers: root.receivers, kbps: root.kbps, feedback: root.feedback, warning: root.warning, logPath: root.logPath})
+        receivers: root.receivers, selectedKey: root.selectedKey, pinRequired: root.pinRequired,
+        airplayOutput: root.airplayOutput, kbps: root.kbps, feedback: root.feedback,
+        warning: root.warning, logPath: root.logPath})
     }
   }
 }

@@ -145,6 +145,36 @@ pub enum Source {
     PipeWire { fd: i32, node: u32 },
 }
 
+pub fn audio_available() -> bool {
+    ["pulsesrc", "audioconvert", "audioresample", "aacparse"]
+        .iter()
+        .all(|name| gst::ElementFactory::find(name).is_some())
+        && audio_encoder().is_some()
+}
+
+fn audio_encoder() -> Option<&'static str> {
+    ["fdkaacenc", "avenc_aac", "faac"]
+        .into_iter()
+        .find(|name| gst::ElementFactory::find(name).is_some())
+}
+
+fn default_output_monitor() -> Result<String> {
+    let output = std::process::Command::new("pactl")
+        .arg("get-default-sink")
+        .output()
+        .context("No se pudo consultar la salida de audio con pactl")?;
+    ensure!(
+        output.status.success(),
+        "No se pudo consultar la salida de audio predeterminada"
+    );
+    let name = std::str::from_utf8(&output.stdout)?.trim();
+    ensure!(
+        !name.is_empty() && !name.contains('\n'),
+        "Salida de audio predeterminada inválida"
+    );
+    Ok(format!("{name}.monitor"))
+}
+
 pub struct Video {
     pipeline: gst::Pipeline,
     sink: AppSink,
@@ -156,13 +186,27 @@ pub struct Video {
 }
 
 impl Video {
-    pub fn start(mode: &VideoMode, source: Source, kbps: u32) -> Result<Self> {
+    pub fn start(mode: &VideoMode, source: Source, kbps: u32, audio: bool) -> Result<Self> {
+        let test = matches!(source, Source::Test);
         let source = match source {
             Source::Test => "videotestsrc name=capture is-live=true pattern=ball".to_string(),
             Source::PipeWire { fd, node } => format!(
                 "pipewiresrc name=capture fd={fd} path={node} do-timestamp=true keepalive-time={}",
                 1000 / mode.fps
             ),
+        };
+        let audio_branch = if audio {
+            let input = if test {
+                "audiotestsrc name=audio_capture is-live=true wave=sine"
+            } else {
+                "pulsesrc name=audio_capture do-timestamp=true"
+            };
+            let encoder = audio_encoder().context("No hay codificador AAC disponible")?;
+            format!(
+                " {input} ! queue max-size-time=500000000 max-size-buffers=0 max-size-bytes=0 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! {encoder} ! aacparse ! audio/mpeg,mpegversion=4,stream-format=adts ! queue ! mux.sink_4352"
+            )
+        } else {
+            String::new()
         };
         let pipeline_text = format!(
             "{source} ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream \
@@ -173,7 +217,7 @@ impl Video {
              ! video/x-h264,profile=(string){},level=(string){},stream-format=byte-stream,alignment=au \
              ! h264parse config-interval=-1 ! mux.sink_4113 \
              mpegtsmux name=mux alignment=7 pat-interval=9000 pmt-interval=9000 pcr-interval=1800 \
-             ! rtpmp2tpay pt=33 mtu=1400 ! appsink name=packets sync=true max-buffers=16 drop=false",
+             ! rtpmp2tpay pt=33 mtu=1400 ! appsink name=packets sync=true max-buffers=16 drop=false {audio_branch}",
             mode.width,
             mode.height,
             mode.fps,
@@ -191,8 +235,13 @@ impl Video {
             .context("Falta appsink")?
             .downcast::<AppSink>()
             .map_err(|_| anyhow::anyhow!("appsink inválido"))?;
-        // WFD's elementary video PID and program map. No audio stream is
-        // advertised or muxed in this experimental video-only implementation.
+        if audio && !test {
+            pipeline
+                .by_name("audio_capture")
+                .context("Falta la captura de audio")?
+                .set_property("device", default_output_monitor()?);
+        }
+        // WFD elementary PIDs: video 0x1011 and audio 0x1100.
         pipeline
             .by_name("mux")
             .context("Falta mpegtsmux")?
@@ -200,6 +249,7 @@ impl Video {
                 "prog-map",
                 gst::Structure::builder("program_map")
                     .field("sink_4113", 1i32)
+                    .field("sink_4352", 1i32)
                     .field("PMT_1", 0x1000u32)
                     .field("PCR_1", "sink_4113")
                     .build(),
@@ -305,7 +355,7 @@ pub async fn self_test() -> Result<serde_json::Value> {
         profile: 2,
         level: 4,
     };
-    let video = Video::start(&mode, Source::Test, 5000)?;
+    let video = Video::start(&mode, Source::Test, 5000, false)?;
     let end = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
     let mut packets = 0u64;
     let mut bytes = 0u64;

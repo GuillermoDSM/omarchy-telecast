@@ -29,6 +29,7 @@ async fn proxy<'a>(conn: &'a Connection, path: &'a str, interface: &'a str) -> R
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Peer {
+    pub protocol: &'static str,
     pub mac: String,
     pub name: String,
     pub model: String,
@@ -169,6 +170,7 @@ impl Manager {
                 let name: String = peer.get_property("Name").await.unwrap_or_default();
                 let model: String = peer.get_property("Model").await.unwrap_or_default();
                 result.push(Peer {
+                    protocol: "miracast",
                     mac: mac.to_ascii_uppercase(),
                     name: clean_name(&name),
                     model: clean_name(&model),

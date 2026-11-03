@@ -1,5 +1,16 @@
-//! Wi-Fi Display 1.0 parameter negotiation. No HDCP, audio, UIBC or extensions.
+//! Wi-Fi Display 1.0 parameter negotiation. No HDCP, UIBC or extensions.
 use anyhow::{Context, Result, bail, ensure};
+
+/// AAC-LC stereo at 48 kHz is WFD AAC mode bit 0.
+pub fn supports_aac(value: &str) -> bool {
+    value.split(',').any(|entry| {
+        let mut fields = entry.split_whitespace();
+        matches!((fields.next(), fields.next(), fields.next(), fields.next()),
+            (Some("AAC"), Some(modes), Some(latency), None)
+                if u32::from_str_radix(modes, 16).is_ok_and(|m| m & 1 != 0)
+                    && u8::from_str_radix(latency, 16).is_ok())
+    })
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VideoMode {
@@ -169,6 +180,15 @@ pub fn available_sink(ies: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_only_valid_aac_stereo_capabilities() {
+        assert!(supports_aac("LPCM 00000003 00, AAC 00000005 00"));
+        assert!(!supports_aac("LPCM 00000003 00"));
+        assert!(!supports_aac("AAC 00000002 00"));
+        assert!(!supports_aac("AAC 00000001 invalid"));
+        assert!(!supports_aac("AAC 00000001 00 extra"));
+    }
     #[test]
     fn caps_never_select_4k_or_1080p60() {
         let mode = select_video("00 00 02 1f ffffffff ffffffff 00000000 00 0000 0000 00 none none")

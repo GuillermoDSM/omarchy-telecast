@@ -211,6 +211,7 @@ impl UdpPair {
 pub struct Negotiated {
     pub wire: Wire,
     pub mode: VideoMode,
+    pub audio: bool,
     pub udp: UdpPair,
     pub session: String,
     pub next_cseq: u32,
@@ -248,6 +249,7 @@ pub async fn negotiate(socket: TcpStream, events: &crate::Events) -> Result<Nego
     let mut pending = (1, "options");
     let mut next_cseq = 2;
     let mut mode = None;
+    let mut audio = false;
     let mut capability_port = None;
     let mut triggered = false;
     let mut setup = false;
@@ -260,7 +262,7 @@ pub async fn negotiate(socket: TcpStream, events: &crate::Events) -> Result<Nego
             events.trace("rtsp_response", &format!("{}:{status}", pending.1));
             ensure!(
                 status == 200,
-                "La TV rechazó {} con RTSP {status}; audio/HDCP/extensiones no están implementados",
+                "La TV rechazó {} con RTSP {status}; HDCP y algunas extensiones no están implementados",
                 pending.1
             );
             ensure!(
@@ -278,8 +280,12 @@ pub async fn negotiate(socket: TcpStream, events: &crate::Events) -> Result<Nego
                         wfd::parameter(&message.body, "wfd_client_rtp_ports")
                             .context("La TV no respondió wfd_client_rtp_ports")?,
                     )?;
+                    audio = wfd::parameter(&message.body, "wfd_audio_codecs")
+                        .is_some_and(wfd::supports_aac)
+                        && crate::media::audio_available();
+                    let audio_parameter = if audio { "AAC 00000001 00" } else { "none" };
                     let body = format!(
-                        "wfd_video_formats: {}\r\nwfd_audio_codecs: none\r\nwfd_presentation_URL: {uri} none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast {port} 0 mode=play\r\nwfd_content_protection: none\r\n",
+                        "wfd_video_formats: {}\r\nwfd_audio_codecs: {audio_parameter}\r\nwfd_presentation_URL: {uri} none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast {port} 0 mode=play\r\nwfd_content_protection: none\r\n",
                         selected.parameter()
                     );
                     mode = Some(selected);
@@ -370,6 +376,7 @@ pub async fn negotiate(socket: TcpStream, events: &crate::Events) -> Result<Nego
                     return Ok(Negotiated {
                         wire,
                         mode: mode.context("No se negoció vídeo")?,
+                        audio,
                         udp,
                         session,
                         next_cseq,

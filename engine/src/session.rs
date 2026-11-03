@@ -227,6 +227,17 @@ async fn connect(mac: &str, test: bool, events: &Events, resources: &mut Resourc
         .await?,
     );
     let transport = resources.transport.as_mut().unwrap();
+    if !transport.audio {
+        events.warning("Sin audio: la TV no anunció AAC estéreo o faltan componentes AAC. LPCM todavía no está implementado.");
+    }
+    events.trace(
+        "audio",
+        if transport.audio {
+            "aac_negotiated"
+        } else {
+            "unavailable"
+        },
+    );
     events.send(json!({"event":"trace","stage":"video","detail":"negotiated","width":transport.mode.width,"height":transport.mode.height,"fps":transport.mode.fps,"rtcp":transport.rtcp_enabled}));
     let source = if test {
         Source::Test
@@ -237,12 +248,24 @@ async fn connect(mac: &str, test: bool, events: &Events, resources: &mut Resourc
         &transport.mode,
         source,
         crate::abr::INITIAL_KBPS,
+        transport.audio,
     )?);
     events.state(
         "starting",
         &format!(
-            "Iniciando vídeo {}×{} a {} fps; sin audio",
-            transport.mode.width, transport.mode.height, transport.mode.fps
+            "Iniciando vídeo {}×{} a {} fps; {}",
+            transport.mode.width,
+            transport.mode.height,
+            transport.mode.fps,
+            if transport.audio {
+                if test {
+                    "tono de prueba AAC"
+                } else {
+                    "audio AAC de la salida predeterminada"
+                }
+            } else {
+                "sin audio"
+            }
         ),
     );
     protect_wifi(
@@ -376,7 +399,7 @@ async fn stream(
                             packets = packets.wrapping_add(1);
                             queue.pop();
                             last_packet = Instant::now();
-                            if packets == 1 { events.state("streaming","Enviando vídeo Miracast. Comprueba la imagen en la TV; no hay confirmación visual ni audio"); }
+                            if packets == 1 { events.state("streaming",if transport.audio { "Enviando vídeo y audio AAC Miracast. Comprueba imagen y sonido en la TV" } else { "Enviando vídeo Miracast sin audio. Comprueba la imagen en la TV" }); }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => { send_would_block += 1; blocked_since.get_or_insert_with(Instant::now); break; }
                         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => { send_memory_errors += 1; retry_send_at = Instant::now() + Duration::from_millis(5); break; }
@@ -463,6 +486,7 @@ mod tests {
         pipeline: gst::Pipeline,
         input: AppSrc,
         frames: Arc<AtomicUsize>,
+        audio: Arc<AtomicUsize>,
     }
 
     impl Decoder {
@@ -470,15 +494,48 @@ mod tests {
             let pipeline = gst::parse::launch(
                 "appsrc name=input is-live=true format=time do-timestamp=true \
                  caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)MP2T,payload=(int)33\" \
-                 ! rtpmp2tdepay ! tsdemux ! h264parse ! avdec_h264 \
-                 ! fakesink name=decoded sync=false signal-handoffs=true")?
+                 ! rtpmp2tdepay ! tsdemux name=demux queue name=video_queue ! h264parse ! avdec_h264 \
+                 ! fakesink name=decoded sync=false async=false signal-handoffs=true \
+                 queue name=audio_queue ! aacparse ! avdec_aac ! fakesink name=decoded_audio sync=false async=false signal-handoffs=true")?
                 .downcast::<gst::Pipeline>().map_err(|_|anyhow::anyhow!("decoder pipeline"))?;
+            let vpad = pipeline
+                .by_name("video_queue")
+                .unwrap()
+                .static_pad("sink")
+                .unwrap();
+            let apad = pipeline
+                .by_name("audio_queue")
+                .unwrap()
+                .static_pad("sink")
+                .unwrap();
+            pipeline
+                .by_name("demux")
+                .unwrap()
+                .connect_pad_added(move |_, pad| {
+                    let target = if pad.name().starts_with("video_") {
+                        &vpad
+                    } else if pad.name().starts_with("audio_") {
+                        &apad
+                    } else {
+                        return;
+                    };
+                    let _ = pad.link(target);
+                });
             let input = pipeline
                 .by_name("input")
                 .unwrap()
                 .downcast::<AppSrc>()
                 .unwrap();
             let frames = Arc::new(AtomicUsize::new(0));
+            let audio = Arc::new(AtomicUsize::new(0));
+            let audio_counter = audio.clone();
+            pipeline
+                .by_name("decoded_audio")
+                .unwrap()
+                .connect("handoff", false, move |_| {
+                    audio_counter.fetch_add(1, Ordering::Relaxed);
+                    None
+                });
             let counter = frames.clone();
             pipeline
                 .by_name("decoded")
@@ -492,6 +549,7 @@ mod tests {
                 pipeline,
                 input,
                 frames,
+                audio,
             })
         }
     }
@@ -515,7 +573,8 @@ mod tests {
                 (session.mode.width, session.mode.height, session.mode.fps) == (1920, 1080, 30),
                 "Wrong negotiated mode"
             );
-            let video = Video::start(&session.mode, Source::Test, 4000)?;
+            ensure!(session.audio, "Audio AAC no negociado");
+            let video = Video::start(&session.mode, Source::Test, 4000, session.audio)?;
             stream(&mut session, &video, &events, None).await?;
             ensure!(
                 video.bitrate() == 3000,
@@ -547,12 +606,13 @@ mod tests {
             ensure!(m3.method() == "GET_PARAMETER", "Missing M3");
             wire.reply(&m3,200,&[],&format!(
                 "wfd_video_formats: 00 00 02 1f ffffffff ffffffff 00000000 00 0000 0000 00 none none\r\n\
-                 wfd_audio_codecs: LPCM 00000003 00\r\n\
+                 wfd_audio_codecs: LPCM 00000003 00, AAC 00000001 00\r\n\
                  wfd_client_rtp_ports: RTP/AVP/UDP;unicast {} 0 mode=play\r\n\
                  wfd_content_protection: none\r\n",udp.port)).await?;
             let m4 = wire.read().await?;
             ensure!(
-                m4.body.contains("00000080") && m4.body.contains("wfd_audio_codecs: none"),
+                m4.body.contains("00000080")
+                    && m4.body.contains("wfd_audio_codecs: AAC 00000001 00"),
                 "Wrong M4"
             );
             wire.reply(&m4, 200, &[], "").await?;
@@ -607,9 +667,13 @@ mod tests {
                 let count = timeout(Duration::from_secs(2), udp.rtp.recv(&mut packet)).await??;
                 ensure!(count >= 12 && packet[1] & 0x7f == 33, "Invalid RTP");
                 received += 1;
-                decoder
-                    .input
-                    .push_buffer(gst::Buffer::from_mut_slice(packet[..count].to_vec()))?;
+                // Join after the mux has started both elementary streams, as a
+                // late-joining receiver would. This also exercises repeated PAT/PMT.
+                if start.elapsed() > Duration::from_millis(600) {
+                    decoder
+                        .input
+                        .push_buffer(gst::Buffer::from_mut_slice(packet[..count].to_vec()))?;
+                }
                 let report_due = if reports == 0 {
                     Duration::from_millis(300)
                 } else {
@@ -631,6 +695,10 @@ mod tests {
             ensure!(
                 decoder.frames.load(Ordering::Relaxed) >= 15,
                 "No decodable H.264 frames received"
+            );
+            ensure!(
+                decoder.audio.load(Ordering::Relaxed) >= 15,
+                "No decodable AAC audio received"
             );
             wire.request(
                 "TEARDOWN",

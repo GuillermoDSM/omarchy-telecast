@@ -1,4 +1,6 @@
 mod abr;
+mod airplay;
+mod audio;
 mod display;
 mod media;
 mod nm;
@@ -71,9 +73,21 @@ enum Request {
     Doctor,
     Scan,
     Connect {
+        #[serde(default)]
         mac: String,
         #[serde(default)]
+        protocol: Option<String>,
+        #[serde(default)]
+        ip: String,
+        #[serde(default)]
+        port: u16,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
         test: bool,
+    },
+    Pin {
+        pin: String,
     },
     Stop,
     Quit,
@@ -104,8 +118,26 @@ async fn doctor() -> Value {
     }
     .await;
     checks.push(json!({"name":"NetworkManager Wi-Fi Direct","ok":network.is_ok(),"detail":network.err().map_or("Disponible; compatibilidad de la TV todavía no verificada".to_string(),|e| e.to_string())}));
-    let ready = checks.iter().all(|c| c["ok"] == true);
-    json!({"event":"diagnostics","checks":checks,"ready":ready,"experimental":true,"audio":false,"firewall_changed":false})
+    let audio = media::audio_available();
+    checks.push(json!({"name":"Audio AAC (opcional)", "ok":audio, "detail":if audio { "Componentes disponibles; falta comprobar pactl, la salida y la TV" } else { "Faltan componentes GStreamer para AAC; se intentará vídeo sin audio" }}));
+    checks.extend(airplay::doctor().await);
+    let ready = checks
+        .iter()
+        .filter(|check| check["group"] != "airplay")
+        .all(|check| check["ok"] == true);
+    let airplay_ready = checks
+        .iter()
+        .filter(|check| check["group"] == "airplay")
+        .all(|check| check["ok"] == true);
+    json!({
+        "event":"diagnostics",
+        "checks":checks,
+        "ready":ready,
+        "airplay_ready":airplay_ready,
+        "experimental":true,
+        "audio":audio,
+        "firewall_changed":false
+    })
 }
 
 // Limit even malformed/no-newline input; never accumulate an unbounded line.
@@ -138,21 +170,74 @@ async fn read_line(
     }
 }
 
+async fn collect_peers(manager: &airplay::Manager) -> (Vec<Value>, Vec<String>) {
+    let (airplay_result, miracast_result) = tokio::join!(
+        manager.scan(),
+        timeout(Duration::from_secs(12), async {
+            nm::Manager::new().await?.peers(true).await
+        })
+    );
+    let mut peers = Vec::new();
+    let mut warnings = Vec::new();
+    match airplay_result {
+        Ok(mut found) => peers.append(&mut found),
+        Err(error) => warnings.push(format!("AirPlay: {error:#}")),
+    }
+    match miracast_result {
+        Ok(Ok(found)) => {
+            for peer in found {
+                if let Ok(mut value) = serde_json::to_value(peer) {
+                    value["protocol"] = json!("miracast");
+                    peers.push(value);
+                }
+            }
+        }
+        Ok(Err(error)) => warnings.push(format!("Miracast: {error:#}")),
+        Err(_) => warnings.push("Miracast: la búsqueda superó 12 segundos".to_string()),
+    }
+    peers.sort_by(|left, right| {
+        let left_airplay = left["protocol"] == "airplay";
+        let right_airplay = right["protocol"] == "airplay";
+        right_airplay
+            .cmp(&left_airplay)
+            .then_with(|| left["name"].as_str().cmp(&right["name"].as_str()))
+    });
+    (peers, warnings)
+}
+
 async fn serve() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(128);
     let events = Events(tx, None);
+    let airplay = Arc::new(airplay::Manager::new()?);
+    if !airplay.is_streaming().await {
+        audio::cleanup_stale().await;
+    }
+    let warm_airplay = airplay.clone();
+    tokio::spawn(async move {
+        warm_airplay.warm().await;
+    });
     let mut stdin = BufReader::new(stdio::Input::new()?);
     let mut command_buffer = Vec::new();
     let mut stdout = stdio::Output::new()?;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut job: Option<(CancellationToken, JoinHandle<()>)> = None;
+    let mut job_terminal = false;
     events.send(json!({"event":"ready","version":env!("CARGO_PKG_VERSION")}));
-    events.state("idle", "Miracast experimental · extender · vídeo sin audio");
+    events.state(
+        "idle",
+        "Miracast y AirPlay experimentales · audio en la TV cuando la sesión lo permite",
+    );
     loop {
         tokio::select! {
             _ = term.recv() => break,
             _ = tokio::signal::ctrl_c() => break,
             Some(event) = rx.recv() => {
+                if job.is_some()
+                    && event["event"] == "state"
+                    && matches!(event["phase"].as_str(), Some("idle" | "error"))
+                {
+                    job_terminal = true;
+                }
                 let mut bytes = serde_json::to_vec(&event)?;
                 bytes.push(b'\n');
                 let written = timeout(Duration::from_secs(2),async {
@@ -164,10 +249,12 @@ async fn serve() -> Result<()> {
             line = read_line(&mut stdin, &mut command_buffer) => {
                 let line = match line { Ok(Some(line)) => line, Ok(None) => break, Err(error) => { events.warning(&error.to_string()); break; } };
                 let request = match serde_json::from_str::<Request>(&line) { Ok(request) => request,Err(error) => { events.warning(&format!("Comando inválido: {error}")); continue; } };
-                if job.as_ref().is_some_and(|(_,task)| task.is_finished())
-                    && let Some((_,task)) = job.take()
-                    && let Err(error) = task.await {
-                    events.state("error",&format!("El motor terminó inesperadamente: {error}"));
+                if job.as_ref().is_some_and(|(_,task)| task.is_finished() || job_terminal)
+                    && let Some((_,task)) = job.take() {
+                    job_terminal = false;
+                    if let Err(error) = task.await {
+                        events.state("error",&format!("El motor terminó inesperadamente: {error}"));
+                    }
                 }
                 match request {
                     Request::Quit => break,
@@ -181,35 +268,79 @@ async fn serve() -> Result<()> {
                         let cancel = CancellationToken::new();
                         let token = cancel.clone();
                         let events = events.clone();
+                        let airplay = airplay.clone();
                         let task = tokio::spawn(async move {
-                            events.state("searching","Buscando receptores Miracast durante 8 segundos");
-                            let result = tokio::select! {
+                            events.state("searching","Buscando receptores AirPlay y Miracast");
+                            let (peers, warnings) = tokio::select! {
                                 _ = token.cancelled() => return events.state("idle","Búsqueda cancelada"),
-                                result = timeout(Duration::from_secs(20),async { nm::Manager::new().await?.peers(true).await }) => result,
+                                result = collect_peers(&airplay) => result,
                             };
-                            match result {
-                                Ok(Ok(peers)) => {
-                                    events.send(json!({"event":"peers","peers":peers}));
-                                    events.state("idle","Búsqueda terminada. Pon la TV en Compartir pantalla si no aparece");
-                                }
-                                Ok(Err(error)) => events.state("error",&format!("{error:#}")),
-                                Err(_) => events.state("error","NetworkManager no terminó la búsqueda en 20 segundos"),
+                            events.send(json!({"event":"peers","peers":peers}));
+                            if !warnings.is_empty() {
+                                events.warning(&warnings.join(" · "));
                             }
+                            events.state("idle",if peers.is_empty() {
+                                "No se encontraron receptores. Comprueba que la TV esté en AirPlay o Compartir pantalla"
+                            } else {
+                                "Búsqueda terminada. Elige una TV para conectar"
+                            });
                         });
+                        job_terminal = false;
                         job = Some((cancel,task));
                     }
-                    Request::Connect { mac,test } if job.is_none() => {
-                        let cancel = CancellationToken::new();
-                        let session_events = match session_log::SessionLog::open() {
-                            Ok(log) => {
-                                events.send(json!({"event":"log","path":log.path.to_string_lossy()}));
-                                events.with_log(log)
-                            },
-                            Err(error) => { events.warning(&format!("No se pudo crear un registro privado: {error:#}. La conexión continuará sin registro")); events.clone() }
-                        };
-                        session_events.trace("session",if test {"pattern"} else {"extended"});
-                        let task = tokio::spawn(session::run(mac,test,session_events,cancel.clone()));
+                    Request::Pin { pin } => {
+                        if pin.is_empty() || pin.len() > 128 {
+                            events.warning("El PIN o contraseña no es válido");
+                        } else if let Err(error) = airplay.pin(&pin).await {
+                            events.warning(&format!("No se pudo enviar el PIN: {error:#}"));
+                        }
+                    }
+                    Request::Connect { mac,protocol,ip,port,name,test } if job.is_none() => {
+                        let protocol = protocol.unwrap_or_else(|| "miracast".to_string());
+                        if protocol == "airplay" {
+                            if ip.parse::<std::net::IpAddr>().is_err() {
+                                events.state("error","La dirección del receptor AirPlay no es válida");
+                            } else if port == 0 {
+                                events.state("error","El receptor AirPlay no anunció un puerto válido");
+                            } else {
+                                let cancel = CancellationToken::new();
+                                let session_events = match session_log::SessionLog::open() {
+                                    Ok(log) => {
+                                        events.send(json!({"event":"log","path":log.path.to_string_lossy()}));
+                                        events.with_log(log)
+                                    },
+                                    Err(error) => { events.warning(&format!("No se pudo crear un registro privado: {error:#}. La conexión continuará sin registro")); events.clone() }
+                                };
+                                session_events.trace("session",if test {"airplay-pattern"} else {"airplay"});
+                                let display_name = if name.is_empty() { ip.clone() } else { name };
+                                let task = tokio::spawn(airplay::run(
+                                    airplay.clone(),
+                                    ip,
+                                    port,
+                                    test,
+                                    display_name,
+                                    session_events,
+                                    cancel.clone(),
+                                ));
+                                job_terminal = false;
                         job = Some((cancel,task));
+                            }
+                        } else if protocol == "miracast" {
+                            let cancel = CancellationToken::new();
+                            let session_events = match session_log::SessionLog::open() {
+                                Ok(log) => {
+                                    events.send(json!({"event":"log","path":log.path.to_string_lossy()}));
+                                    events.with_log(log)
+                                },
+                                Err(error) => { events.warning(&format!("No se pudo crear un registro privado: {error:#}. La conexión continuará sin registro")); events.clone() }
+                            };
+                            session_events.trace("session",if test {"pattern"} else {"extended"});
+                            let task = tokio::spawn(session::run(mac,test,session_events,cancel.clone()));
+                            job_terminal = false;
+                        job = Some((cancel,task));
+                        } else {
+                            events.state("error","Protocolo de envío desconocido");
+                        }
                     }
                     _ => events.warning("Ya hay una operación activa. Pulsa Detener antes de iniciar otra"),
                 }
@@ -222,6 +353,7 @@ async fn serve() -> Result<()> {
         cancel.cancel();
         let _ = timeout(Duration::from_secs(15), task).await;
     }
+    airplay.shutdown().await;
     Ok(())
 }
 
@@ -239,11 +371,10 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some("scan") => {
-            let peers = timeout(Duration::from_secs(20), async {
-                nm::Manager::new().await?.peers(true).await
-            })
-            .await??;
-            println!("{}", json!({"peers":peers}));
+            let manager = airplay::Manager::new()?;
+            let (peers, warnings) = collect_peers(&manager).await;
+            manager.shutdown().await;
+            println!("{}", json!({"peers":peers,"warnings":warnings}));
             Ok(())
         }
         _ => {

@@ -1,9 +1,9 @@
 [package]
 name = "omarchy-miracast"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
-description = "Experimental native Wi-Fi Display source for the Omarchy shell"
+description = "Experimental AirPlay and Wi-Fi Display sender for the Omarchy shell"
 
 [dependencies]
 anyhow = "1"

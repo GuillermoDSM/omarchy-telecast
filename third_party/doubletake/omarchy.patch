@@ -1,0 +1,320 @@
+diff --git i/cmd/doubletake/main.go w/cmd/doubletake/main.go
+index 20053db..5c7b9d4 100644
+--- i/cmd/doubletake/main.go
++++ w/cmd/doubletake/main.go
+@@ -73,6 +73,8 @@ func main() {
+ 	noEncrypt := flag.Bool("no-encrypt", false, "Disable RTSP header encryption (debugging only; video frames are always encrypted)")
+ 	directKey := flag.Bool("direct-key", false, "Use shk/shiv directly without SHA-512 derivation")
+ 	noAudio := flag.Bool("no-audio", false, "Disable audio streaming")
++	audioSource := flag.String("audio-source", "", "PulseAudio/PipeWire monitor source to capture instead of the default sink")
++	preserveReceiverVolume := flag.Bool("preserve-receiver-volume", false, "Leave the receiver's volume unchanged instead of setting it to 0 dB")
+ 	portRange := flag.String("port-range", "", "Local UDP port range for receiver timing/audio (e.g. \"60000-60010\"); empty = OS ephemeral. Needs at least 3 ports.")
+ 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
+ 	daemonize := flag.Bool("daemonize", false, "Run as background daemon with Unix socket control interface")
+@@ -104,22 +106,24 @@ func main() {
+ 
+ 	if *daemonize {
+ 		runDaemon(daemon.Config{
+-			SocketPath:  *socketPath,
+-			CredFile:    *credFile,
+-			CredBackend: *credBackend,
+-			FPS:         *fps,
+-			Bitrate:     *bitrate,
+-			PortMin:     portMin,
+-			PortMax:     portMax,
+-			HWAccel:     *hwaccel,
+-			VideoCodec:  airplay.VideoCodec(*videoCodec),
+-			Debug:       *debug,
+-			TestMode:    *testMode,
+-			NoEncrypt:   *noEncrypt,
+-			DirectKey:   *directKey,
+-			NoAudio:     *noAudio,
+-			ShowCursor:  !*noCursor,
+-			Code:        credential,
++			SocketPath:             *socketPath,
++			CredFile:               *credFile,
++			CredBackend:            *credBackend,
++			FPS:                    *fps,
++			Bitrate:                *bitrate,
++			PortMin:                portMin,
++			PortMax:                portMax,
++			HWAccel:                *hwaccel,
++			VideoCodec:             airplay.VideoCodec(*videoCodec),
++			Debug:                  *debug,
++			TestMode:               *testMode,
++			NoEncrypt:              *noEncrypt,
++			DirectKey:              *directKey,
++			NoAudio:                *noAudio,
++			PreserveReceiverVolume: *preserveReceiverVolume,
++			AudioSource:            *audioSource,
++			ShowCursor:             !*noCursor,
++			Code:                   credential,
+ 		})
+ 		return
+ 	}
+@@ -325,14 +329,15 @@ func main() {
+ 	}
+ 
+ 	streamCfg := airplay.StreamConfig{
+-		FPS:        *fps,
+-		Bitrate:    *bitrate,
+-		VideoCodec: airplay.VideoCodec(*videoCodec),
+-		NoEncrypt:  *noEncrypt,
+-		DirectKey:  *directKey,
+-		NoAudio:    *noAudio,
+-		PortMin:    portMin,
+-		PortMax:    portMax,
++		FPS:                    *fps,
++		Bitrate:                *bitrate,
++		VideoCodec:             airplay.VideoCodec(*videoCodec),
++		NoEncrypt:              *noEncrypt,
++		DirectKey:              *directKey,
++		NoAudio:                *noAudio,
++		PreserveReceiverVolume: *preserveReceiverVolume,
++		PortMin:                portMin,
++		PortMax:                portMax,
+ 	}
+ 	// Complete the potentially interactive Wayland portal request before SETUP,
+ 	// but delay encoder startup until control SETUP returns session-time display
+@@ -479,7 +484,7 @@ func main() {
+ 
+ 	// Start audio capture and streaming unless disabled.
+ 	if !*noAudio && session.HasAudio() {
+-		audioCapture, err := airplay.StartAudioCapture(ctx, *testMode, session.AudioCodec())
++		audioCapture, err := airplay.StartAudioCaptureWithSource(ctx, *testMode, session.AudioCodec(), *audioSource)
+ 		if err != nil {
+ 			log.Printf("warning: audio capture failed: %v (continuing without audio)", err)
+ 		} else {
+diff --git i/internal/airplay/audio.go w/internal/airplay/audio.go
+index ba4b175..6fd8252 100644
+--- i/internal/airplay/audio.go
++++ w/internal/airplay/audio.go
+@@ -240,10 +240,16 @@ func audioCapturePipelineArgs(srcArgs []string, codec AudioCodec, timestamped bo
+ 	return append(args, "!", "fdsink", "fd=1", "sync=false", "async=false")
+ }
+ 
+-// StartAudioCapture launches a pipeline that captures system audio (monitor source)
+-// and feeds raw PCM into the encoder negotiated by SETUP. ALAC is built in;
+-// AAC-ELD is available in builds made with -tags fdk_aac and libfdk-aac.
++// StartAudioCapture launches a pipeline that captures the default sink's
++// monitor source and feeds raw PCM into the encoder negotiated by SETUP.
+ func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*AudioCapture, error) {
++	return StartAudioCaptureWithSource(ctx, testTone, codec, "")
++}
++
++// StartAudioCaptureWithSource is StartAudioCapture with an explicit monitor
++// source. The plugin uses this to capture a virtual sink that represents the
++// TV, so the TV behaves like a normal selectable Omarchy audio output.
++func StartAudioCaptureWithSource(ctx context.Context, testTone bool, codec AudioCodec, source string) (*AudioCapture, error) {
+ 	captureCtx, cancel := context.WithCancel(ctx)
+ 	if codec != AudioCodecALAC && codec != AudioCodecAACELD {
+ 		cancel()
+@@ -254,18 +260,19 @@ func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*A
+ 	// Detect audio source
+ 	var srcArgs []string
+ 	if testTone {
+-		srcArgs = []string{"audiotestsrc", "wave=sine", "freq=440", "is-live=true",
++		srcArgs = []string{"audiotestsrc", "wave=sine", "freq=440", "volume=0.01", "is-live=true",
+ 			fmt.Sprintf("samplesperbuffer=%d", codecSPF)}
+-		dbg("[AUDIO] using test tone (440 Hz sine wave, live, spf=%d)", codecSPF)
++		dbg("[AUDIO] using test tone (440 Hz sine wave, volume=0.01, live, spf=%d)", codecSPF)
+ 	} else {
+ 		hasPipeWireSource := exec.Command("gst-inspect-1.0", "pipewiresrc").Run() == nil
+ 		hasPulseSource := exec.Command("gst-inspect-1.0", "pulsesrc").Run() == nil
+-		monitor := ""
+-		if hasPulseSource {
++		monitor := source
++		if monitor == "" && hasPulseSource {
+ 			monitor = detectPulseMonitor()
+ 		}
+-		var source string
+-		srcArgs, source = selectAudioMonitorSource(hasPulseSource, monitor, hasPipeWireSource, codec)
++		var selectedSource string
++		srcArgs, selectedSource = selectAudioMonitorSource(hasPulseSource, monitor, hasPipeWireSource, codec)
++		source = selectedSource
+ 		switch source {
+ 		case "pulse":
+ 			fragmentTime := audioCaptureFragmentTime(codec)
+diff --git i/internal/airplay/client.go w/internal/airplay/client.go
+index beb6748..e4ac5a8 100644
+--- i/internal/airplay/client.go
++++ w/internal/airplay/client.go
+@@ -1359,6 +1359,7 @@ type StreamConfig struct {
+ 	NoEncrypt              bool          // Disable encryption for debugging
+ 	DirectKey              bool          // Use shk/shiv directly without SHA-512 derivation
+ 	NoAudio                bool          // Disable audio streaming
++	PreserveReceiverVolume bool          // Do not send SET_PARAMETER volume during setup
+ 
+ 	// PortMin/PortMax bound the local ports used for the audio UDP triple
+ 	// (timing/control/data, 3 consecutive ports). The receiver's event channel
+diff --git i/internal/airplay/mirror.go w/internal/airplay/mirror.go
+index 673b6b0..4902717 100644
+--- i/internal/airplay/mirror.go
++++ w/internal/airplay/mirror.go
+@@ -1139,14 +1139,14 @@ func (c *AirPlayClient) setupMirrorSessionOnce(ctx context.Context, cfg StreamCo
+ 		return nil, err
+ 	}
+ 
+-	// Only set the receiver's volume when this session actually carries audio.
+-	// `volume: 0.000000` is 0 dB — full scale in AirPlay, not silence — so a
+-	// video-only session would force the receiver to maximum on every connect.
+-	// Sending -144 instead would be equally destructive of the user's setting;
+-	// a session that transmits no audio has no use for the receiver's audio
+-	// state and should leave its volume untouched.
++	// `volume: 0.000000` is 0 dB — full scale in AirPlay, not silence — so
++	// setting it on every connect discards the receiver's own volume. A
++	// video-only session has no use for the receiver's audio state; a caller
++	// that wants to preserve the TV's setting asks for that explicitly.
+ 	if cfg.NoAudio {
+ 		dbg("[SETUP] no-audio session: skipping SET_PARAMETER volume")
++	} else if cfg.PreserveReceiverVolume {
++		dbg("[SETUP] preserving receiver volume: skipping SET_PARAMETER volume")
+ 	} else {
+ 		// Positive dB values are invalid here and current receivers may
+ 		// interpret them as zero gain. Real senders send the sender's own
+diff --git i/internal/airplay/mirror_setup_test.go w/internal/airplay/mirror_setup_test.go
+index 30c6cd6..0033dcf 100644
+--- i/internal/airplay/mirror_setup_test.go
++++ w/internal/airplay/mirror_setup_test.go
+@@ -1030,6 +1030,24 @@ func TestSetupMirrorWithAudioSetsReceiverVolume(t *testing.T) {
+ 	}
+ }
+ 
++func TestSetupMirrorWithAudioCanPreserveReceiverVolume(t *testing.T) {
++	for _, test := range []struct {
++		name       string
++		skipRecord bool
++	}{
++		{name: "record", skipRecord: false},
++		{name: "skip record", skipRecord: true},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			testSetupMirrorAudioSessionNegotiation(t, audioSessionCase{
++				skipRecord:     test.skipRecord,
++				noAudio:        false,
++				preserveVolume: true,
++			})
++		})
++	}
++}
++
+ func TestSetupMirrorControlFirstRecordsAfterStreamSetup(t *testing.T) {
+ 	testSetupMirrorAudioSessionNegotiation(t, audioSessionCase{
+ 		skipRecord:   false,
+@@ -1057,13 +1075,14 @@ func TestSetAudioMutedRefusesWhenSessionHasNoAudio(t *testing.T) {
+ }
+ 
+ type audioSessionCase struct {
+-	skipRecord   bool
+-	noAudio      bool
+-	controlFirst bool
++	skipRecord     bool
++	noAudio        bool
++	preserveVolume bool
++	controlFirst   bool
+ }
+ 
+ func testSetupMirrorAudioSessionNegotiation(t *testing.T, test audioSessionCase) {
+-	skipRecord, noAudio := test.skipRecord, test.noAudio
++	skipRecord, noAudio, preserveVolume := test.skipRecord, test.noAudio, test.preserveVolume
+ 	eventListener, err := net.Listen("tcp", "127.0.0.1:0")
+ 	if err != nil {
+ 		t.Fatalf("listen event channel: %v", err)
+@@ -1390,7 +1409,7 @@ func testSetupMirrorAudioSessionNegotiation(t *testing.T, test audioSessionCase)
+ 	}
+ 	client.info = &ReceiverInfo{SupportedFormats: StreamFormats{ScreenStream: screenStreamFormats}}
+ 
+-	session, err := client.SetupMirror(ctx, StreamConfig{FPS: 30, NoAudio: noAudio})
++	session, err := client.SetupMirror(ctx, StreamConfig{FPS: 30, NoAudio: noAudio, PreserveReceiverVolume: preserveVolume})
+ 	if err != nil {
+ 		t.Fatalf("SetupMirror(noAudio=%v): %v", noAudio, err)
+ 	}
+@@ -1434,9 +1453,10 @@ func testSetupMirrorAudioSessionNegotiation(t *testing.T, test audioSessionCase)
+ 		wantMethods = append(wantMethods, "RECORD")
+ 	}
+ 	// The two volume SET_PARAMETERs are sent only when the session carries
+-	// audio: `volume: 0.000000` is 0 dB — full scale — so a video-only
+-	// session would force the receiver to maximum.
+-	if !noAudio {
++	// audio and the caller did not ask to preserve the receiver's volume:
++	// `volume: 0.000000` is 0 dB — full scale — so sending it would force the
++	// receiver to maximum.
++	if !noAudio && !preserveVolume {
+ 		wantMethods = append(wantMethods, "SET_PARAMETER", "SET_PARAMETER")
+ 	}
+ 	wantMethods = append(wantMethods, "POST", "TEARDOWN")
+diff --git i/internal/daemon/daemon.go w/internal/daemon/daemon.go
+index f00cc8a..8727952 100644
+--- i/internal/daemon/daemon.go
++++ w/internal/daemon/daemon.go
+@@ -86,34 +86,37 @@ type DeviceInfo struct {
+ 
+ // Config holds daemon configuration.
+ type Config struct {
+-	SocketPath  string
+-	CredFile    string
+-	CredBackend string
+-	FPS         int
+-	Bitrate     int
+-	PortMin     int // inclusive local UDP port bound; zero with PortMax means ephemeral
+-	PortMax     int // inclusive local UDP port bound; zero with PortMin means ephemeral
+-	HWAccel     string
+-	VideoCodec  airplay.VideoCodec
+-	Debug       bool
+-	TestMode    bool
+-	NoEncrypt   bool
+-	DirectKey   bool
+-	NoAudio     bool
+-	ShowCursor  bool
+-	Code        string // default pairing/Digest credential; request Pin overrides it
++	SocketPath             string
++	CredFile               string
++	CredBackend            string
++	FPS                    int
++	Bitrate                int
++	PortMin                int // inclusive local UDP port bound; zero with PortMax means ephemeral
++	PortMax                int // inclusive local UDP port bound; zero with PortMin means ephemeral
++	HWAccel                string
++	VideoCodec             airplay.VideoCodec
++	Debug                  bool
++	TestMode               bool
++	NoEncrypt              bool
++	DirectKey              bool
++	NoAudio                bool
++	PreserveReceiverVolume bool
++	AudioSource            string
++	ShowCursor             bool
++	Code                   string // default pairing/Digest credential; request Pin overrides it
+ }
+ 
+ func (d *Daemon) mirrorStreamConfig() airplay.StreamConfig {
+ 	return airplay.StreamConfig{
+-		FPS:        d.cfg.FPS,
+-		Bitrate:    d.cfg.Bitrate,
+-		VideoCodec: d.cfg.VideoCodec,
+-		NoEncrypt:  d.cfg.NoEncrypt,
+-		DirectKey:  d.cfg.DirectKey,
+-		NoAudio:    d.cfg.NoAudio,
+-		PortMin:    d.cfg.PortMin,
+-		PortMax:    d.cfg.PortMax,
++		FPS:                    d.cfg.FPS,
++		Bitrate:                d.cfg.Bitrate,
++		VideoCodec:             d.cfg.VideoCodec,
++		NoEncrypt:              d.cfg.NoEncrypt,
++		DirectKey:              d.cfg.DirectKey,
++		NoAudio:                d.cfg.NoAudio,
++		PreserveReceiverVolume: d.cfg.PreserveReceiverVolume,
++		PortMin:                d.cfg.PortMin,
++		PortMax:                d.cfg.PortMax,
+ 	}
+ }
+ 
+@@ -1230,7 +1233,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
+ 	var audioDone chan error
+ 	if !d.cfg.NoAudio && session.HasAudio() {
+ 		var audioErr error
+-		audioCapture, audioErr = airplay.StartAudioCapture(ctx, d.cfg.TestMode, session.AudioCodec())
++		audioCapture, audioErr = airplay.StartAudioCaptureWithSource(ctx, d.cfg.TestMode, session.AudioCodec(), d.cfg.AudioSource)
+ 		if audioErr != nil {
+ 			log.Printf("[daemon] audio capture failed: %v (continuing without audio)", audioErr)
+ 		} else {

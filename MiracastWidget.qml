@@ -25,13 +25,18 @@ Ui.BarWidget {
     if (root.popupOpen && !root.controller.busy) root.controller.discover()
   }
 
-  function activateReceiver(mac) {
+  function activateReceiver(key) {
     if (root.controller.busy) {
-      if (root.controller.selectedMac === mac && root.controller.phase !== "searching") root.controller.stop()
+      if (root.controller.selectedKey === key && root.controller.phase !== "searching") root.controller.stop()
       return
     }
-    if (!root.controller.prerequisitesReady) return
-    root.controller.selectedMac = mac
+    var receiver = null
+    for (var i = 0; i < root.controller.receivers.length; i++) {
+      if (root.controller.receivers[i].key === key) receiver = root.controller.receivers[i]
+    }
+    if (!receiver) return
+    if (receiver.protocol === "airplay" ? !root.controller.airplayReady : !root.controller.prerequisitesReady) return
+    root.controller.selectedKey = key
     root.close()
     root.controller.connectSelected()
   }
@@ -44,7 +49,7 @@ Ui.BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.controller.streaming && !root.vertical ? "󰄘 " + Model.bitrate(root.controller.kbps) : "󰄘"
-    tooltipText: "Miracast · " + root.controller.statusLabel + "\n" + root.controller.detail
+    tooltipText: "Enviar pantalla · " + root.controller.statusLabel + "\n" + root.controller.detail
     foreground: root.controller.phase === "error" ? Commons.Color.urgent : root.controller.streaming ? Commons.Color.accent : root.foreground
     onPressed: function (mouseButton) {
       if (mouseButton === Qt.MiddleButton) root.controller.stop()
@@ -58,7 +63,7 @@ Ui.BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    focusTarget: keys
+    focusTarget: root.controller.pinRequired ? pinInput : keys
     contentWidth: popup.fittedContentWidth(Style.space(360))
     contentHeight: popup.fittedContentHeight(content.implicitHeight, Style.space(740))
 
@@ -81,7 +86,7 @@ Ui.BarWidget {
 
         Text {
           width: parent.width
-          text: "MIRACAST"
+          text: "ENVIAR PANTALLA"
           textFormat: Text.PlainText
           font.family: root.fontFamily
           font.pixelSize: Style.font.heading
@@ -124,8 +129,9 @@ Ui.BarWidget {
 
         Text {
           width: parent.width
-          text: "Extender · máximo 1080p · sin audio"
+          text: "AirPlay para Samsung/LG/Sony compatibles · la TV aparecerá como salida de audio · Miracast como respaldo"
           textFormat: Text.PlainText
+          wrapMode: Text.Wrap
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -173,14 +179,14 @@ Ui.BarWidget {
             width: content.width
             height: receiverText.implicitHeight + Style.space(18)
             radius: Style.space(3)
-            color: root.controller.selectedMac === modelData.mac ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.14) : "transparent"
-            border.width: root.controller.selectedMac === modelData.mac ? 1 : 0
+            color: root.controller.selectedKey === modelData.key ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.14) : "transparent"
+            border.width: root.controller.selectedKey === modelData.key ? 1 : 0
             border.color: Commons.Color.accent
             activeFocusOnTab: true
             Accessible.role: Accessible.Button
-            Accessible.name: modelData.name + (root.controller.busy && root.controller.selectedMac === modelData.mac ? " · Desconectar" : " · Conectar")
-            Keys.onReturnPressed: root.activateReceiver(modelData.mac)
-            Keys.onSpacePressed: root.activateReceiver(modelData.mac)
+            Accessible.name: modelData.name + (root.controller.busy && root.controller.selectedKey === modelData.key ? " · Desconectar" : " · Conectar")
+            Keys.onReturnPressed: root.activateReceiver(modelData.key)
+            Keys.onSpacePressed: root.activateReceiver(modelData.key)
             Column {
               id: receiverText
               anchors.centerIn: parent
@@ -197,7 +203,11 @@ Ui.BarWidget {
               }
               Text {
                 width: parent.width
-                text: root.controller.busy && root.controller.selectedMac === receiverRow.modelData.mac && root.controller.phase !== "searching" ? "Desconectar" : receiverRow.modelData.strength + "% · Conectar"
+                text: root.controller.busy && root.controller.selectedKey === receiverRow.modelData.key && root.controller.phase !== "searching"
+                  ? "Desconectar"
+                  : Model.protocolLabel(receiverRow.modelData.protocol) + (receiverRow.modelData.protocol === "airplay"
+                    ? (receiverRow.modelData.model ? " · " + receiverRow.modelData.model : " · Conectar")
+                    : " · " + receiverRow.modelData.strength + "%")
                 textFormat: Text.PlainText
                 color: Qt.darker(root.foreground, 1.4)
                 font.family: root.fontFamily
@@ -206,9 +216,48 @@ Ui.BarWidget {
             }
             MouseArea {
               anchors.fill: parent
-              enabled: (!root.controller.busy && root.controller.prerequisitesReady) || (root.controller.busy && root.controller.selectedMac === receiverRow.modelData.mac && root.controller.phase !== "searching")
+              enabled: (!root.controller.busy && (receiverRow.modelData.protocol === "airplay" ? root.controller.airplayReady : root.controller.prerequisitesReady))
+                || (root.controller.busy && root.controller.selectedKey === receiverRow.modelData.key && root.controller.phase !== "searching")
               cursorShape: Qt.PointingHandCursor
-              onClicked: { receiverRow.forceActiveFocus(); root.activateReceiver(receiverRow.modelData.mac) }
+              onClicked: { receiverRow.forceActiveFocus(); root.activateReceiver(receiverRow.modelData.key) }
+            }
+          }
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: root.controller.pinRequired
+          onVisibleChanged: if (visible) Qt.callLater(pinInput.forceActiveFocus)
+          Text {
+            width: parent.width
+            text: root.controller.pinKind === "password" ? "Contraseña de la TV" : "PIN que muestra la TV"
+            textFormat: Text.PlainText
+            color: Commons.Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+          }
+          Ui.TextField {
+            id: pinInput
+            width: parent.width
+            placeholderText: root.controller.pinKind === "password" ? "Contraseña" : "PIN"
+            inputMethodHints: root.controller.pinKind === "password" ? Qt.ImhNone : Qt.ImhDigitsOnly
+            maximumLength: 128
+            foreground: root.foreground
+            onAccepted: {
+              root.controller.submitPin(text)
+              text = ""
+            }
+          }
+          Ui.Button {
+            width: parent.width
+            text: "Enviar código"
+            bordered: true
+            foreground: root.foreground
+            onClicked: {
+              root.controller.submitPin(pinInput.text)
+              pinInput.text = ""
             }
           }
         }
@@ -227,8 +276,15 @@ Ui.BarWidget {
         Text {
           width: parent.width
           visible: root.controller.streaming
-          text: root.controller.resolution + " · " + Model.bitrate(root.controller.kbps) + "\n"
-            + (root.controller.feedback ? "Adaptación por informes RTCP de la TV" : "Sin RTCP: recuperación local limitada; recepción no verificada")
+          text: root.controller.resolution === "AirPlay"
+            ? "AirPlay · " + (root.controller.airplayAudio
+                ? (root.controller.airplayOutput
+                  ? "salida de audio de la TV disponible en el panel de Omarchy"
+                  : "audio no disponible en la salida de la TV")
+                : "sin audio") + "\n"
+              + "Puedes cambiar entre la TV y el altavoz en el panel de audio, como cualquier otra salida. El volumen de la TV no se modifica"
+            : root.controller.resolution + " · " + Model.bitrate(root.controller.kbps) + "\n"
+              + (root.controller.feedback ? "Adaptación por informes RTCP de la TV" : "Sin RTCP: recuperación local limitada; recepción no verificada")
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: root.foreground
@@ -238,7 +294,7 @@ Ui.BarWidget {
 
         Text {
           width: parent.width
-          text: "Experimental. Wi-Fi Direct puede afectar al Wi-Fi habitual; el motor cancela si detecta un cambio. No modifica UFW."
+          text: "Experimental. AirPlay no cambia el volumen de la TV; Miracast puede afectar al Wi-Fi habitual y el motor cancela si detecta un cambio. No modifica UFW."
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: Qt.darker(root.foreground, 1.4)
