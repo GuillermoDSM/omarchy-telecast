@@ -225,7 +225,7 @@ async fn serve() -> Result<()> {
     events.send(json!({"event":"ready","version":env!("CARGO_PKG_VERSION")}));
     events.state(
         "idle",
-        "Miracast y AirPlay experimentales · audio en la TV cuando la sesión lo permite",
+        "Miracast y AirPlay experimentales · el audio también suena en la laptop",
     );
     loop {
         tokio::select! {

@@ -111,20 +111,6 @@ impl Manager {
             .map(|_| ())
     }
 
-    async fn pause_audio(&self) -> Result<()> {
-        let response = self
-            .request(json!({"cmd":"pause_audio"}), REQUEST_TIMEOUT)
-            .await?;
-        check(response).map(|_| ())
-    }
-
-    async fn resume_audio(&self) -> Result<()> {
-        let response = self
-            .request(json!({"cmd":"resume_audio"}), REQUEST_TIMEOUT)
-            .await?;
-        check(response).map(|_| ())
-    }
-
     async fn ensure(&self, test: bool) -> Result<()> {
         let mut guard = self.running.lock().await;
         if let Some(running) = guard.as_mut() {
@@ -156,8 +142,6 @@ impl Manager {
             .arg("-creds")
             .arg(&self.creds)
             .arg("-preserve-receiver-volume")
-            .arg("-audio-source")
-            .arg("omarchy_airplay.monitor")
             .arg("-fps")
             .arg("30")
             .arg("-bitrate")
@@ -170,6 +154,9 @@ impl Manager {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
             .kill_on_drop(true);
+        if std::env::var_os("OMARCHY_MIRACAST_AIRPLAY_DEBUG").is_some() {
+            command.arg("-debug");
+        }
         if test {
             command.arg("-test");
         }
@@ -328,19 +315,11 @@ pub async fn run(
     cancel: CancellationToken,
 ) {
     let name = clean(&name, 120);
-    let mut route: Option<audio::AudioRoute> = None;
     let mut last_state = String::new();
     let mut audio_warned = false;
-    let mut tv_selected = false;
     let result = async {
         manager.ensure(test).await?;
         check_route(&target).await?;
-        match audio::AudioRoute::create(&format!("{name} (AirPlay)")).await {
-            Ok(created) => route = Some(created),
-            Err(error) => events.warning(&format!(
-                "No se pudo crear la salida de audio de la TV: {error:#}"
-            )),
-        }
         events.state(
             "connecting",
             &format!("Conectando con {name} por AirPlay; acepta la solicitud en la TV"),
@@ -377,38 +356,14 @@ pub async fn run(
                             "audio": has_audio,
                         }));
                         let detail = if has_audio {
-                            format!("AirPlay activo · audio y vídeo en {name}")
+                            format!(
+                                "AirPlay activo · audio y vídeo en {name}; el audio también suena en la laptop"
+                            )
                         } else {
                             format!("AirPlay activo · vídeo sin audio en {name}")
                         };
                         events.state("streaming", &detail);
-                        if has_audio {
-                            if let Some(route) = route.as_mut() {
-                                match route.activate().await {
-                                    Ok(()) => {
-                                        tv_selected = true;
-                                        events.send(json!({"event":"audio_route","selected":true}));
-                                        events.trace(
-                                            "audio",
-                                            "Salida de audio de la TV seleccionada. Puedes cambiarla en el panel de audio de Omarchy como cualquier otra salida",
-                                        );
-                                    }
-                                    Err(error) => {
-                                        audio_warned = true;
-                                        events.send(json!({"event":"audio_route","selected":false}));
-                                        events.warning(&format!(
-                                            "No se pudo seleccionar la salida de audio de la TV: {error:#}. Selecciónala manualmente en el panel de audio"
-                                        ));
-                                    }
-                                }
-                            } else if !audio_warned {
-                                audio_warned = true;
-                                events.send(json!({"event":"audio_route","selected":false}));
-                                events.warning(
-                                    "La salida de audio de la TV no está disponible; el audio seguirá en la laptop",
-                                );
-                            }
-                        } else if !audio_warned {
+                        if !has_audio && !audio_warned {
                             audio_warned = true;
                             events.warning(
                                 "La TV no negoció audio; la sesión AirPlay continuará solo con vídeo",
@@ -434,33 +389,6 @@ pub async fn run(
             if state == "idle" {
                 break;
             }
-            if state == "streaming"
-                && route.is_some()
-            {
-                let selected = audio::tv_selected().await;
-                if selected != tv_selected {
-                    let result = if selected {
-                        manager.resume_audio().await
-                    } else {
-                        manager.pause_audio().await
-                    };
-                    match result {
-                        Ok(()) => events.trace(
-                            "audio",
-                            if selected {
-                                "Audio AirPlay reanudado con RECORD"
-                            } else {
-                                "Audio AirPlay pausado con FLUSH; el vídeo continúa"
-                            },
-                        ),
-                        Err(error) => events.warning(&format!(
-                            "No se pudo {} el audio AirPlay: {error:#}",
-                            if selected { "reanudar" } else { "pausar" }
-                        )),
-                    }
-                    tv_selected = selected;
-                }
-            }
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = sleep(POLL_INTERVAL) => {}
@@ -471,13 +399,6 @@ pub async fn run(
     .await;
 
     let _ = manager.disconnect().await;
-    if let Some(mut route) = route.take() {
-        route.restore().await;
-        events.trace(
-            "audio",
-            "Salida de audio de la TV retirada; se restauró la salida anterior si seguía seleccionada",
-        );
-    }
     match result {
         Ok(()) => events.state("idle", "Sesión AirPlay terminada"),
         Err(error) => events.state("error", &format!("{error:#}")),

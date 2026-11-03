@@ -14,7 +14,7 @@ QtObject {
   property bool engineReady: false
   property var queued: []
   property string phase: "offline"
-  property string detail: "AirPlay y Miracast experimentales · audio en la TV cuando esté disponible"
+  property string detail: "AirPlay y Miracast experimentales · el audio AirPlay también suena en la laptop"
   property bool busy: false
   property var receivers: []
   property string selectedKey: ""
@@ -24,7 +24,6 @@ QtObject {
   property bool pinRequired: false
   property string pinKind: "pin"
   property bool airplayAudio: false
-  property bool airplayOutput: false
   property bool testPattern: false
   property int kbps: 0
   property bool feedback: false
@@ -145,11 +144,8 @@ QtObject {
         root.pinKind = String(event.kind || "pin")
       } else if (event.event === "airplay") {
         root.airplayAudio = event.audio === true
-        root.airplayOutput = false
         root.feedback = false
         root.resolution = "AirPlay"
-      } else if (event.event === "audio_route") {
-        root.airplayOutput = event.selected === true
       } else if (event.event === "metrics") {
         root.kbps = Math.max(0, Math.min(8000, Number(event.kbps) || 0))
         root.feedback = event.feedback === true
@@ -177,7 +173,6 @@ QtObject {
       root.busy = false
       root.queued = []
       root.pinRequired = false
-      root.airplayOutput = false
       root.phase = exitCode === 0 ? "offline" : "error"
       root.detail = exitCode === 0 ? "Motor detenido" : "El motor terminó con código " + exitCode + ". Abre Diagnóstico para ver detalles."
     }
@@ -190,7 +185,7 @@ QtObject {
     function status(): string {
       return JSON.stringify({phase: root.phase, detail: root.detail, busy: root.busy,
         receivers: root.receivers, selectedKey: root.selectedKey, pinRequired: root.pinRequired,
-        airplayOutput: root.airplayOutput, kbps: root.kbps, feedback: root.feedback,
+        kbps: root.kbps, feedback: root.feedback,
         warning: root.warning, logPath: root.logPath})
     }
   }

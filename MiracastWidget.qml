@@ -129,7 +129,7 @@ Ui.BarWidget {
 
         Text {
           width: parent.width
-          text: "AirPlay para Samsung/LG/Sony compatibles · la TV aparecerá como salida de audio · Miracast como respaldo"
+          text: "AirPlay para Samsung/LG/Sony compatibles · el audio también suena en la laptop · Miracast como respaldo"
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: root.foreground
@@ -278,11 +278,9 @@ Ui.BarWidget {
           visible: root.controller.streaming
           text: root.controller.resolution === "AirPlay"
             ? "AirPlay · " + (root.controller.airplayAudio
-                ? (root.controller.airplayOutput
-                  ? "salida de audio de la TV disponible en el panel de Omarchy"
-                  : "audio no disponible en la salida de la TV")
+                ? "audio y vídeo; el audio también suena en la laptop"
                 : "sin audio") + "\n"
-              + "Puedes cambiar entre la TV y el altavoz en el panel de audio, como cualquier otra salida. El volumen de la TV no se modifica"
+              + "Si quieres oír solo la TV, silencia la laptop. El volumen de la TV no se modifica"
             : root.controller.resolution + " · " + Model.bitrate(root.controller.kbps) + "\n"
               + (root.controller.feedback ? "Adaptación por informes RTCP de la TV" : "Sin RTCP: recuperación local limitada; recepción no verificada")
           textFormat: Text.PlainText

@@ -17,13 +17,13 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 - Widget de barra, receptores AirPlay y Miracast, y diagnóstico por etapas.
 - Backend AirPlay mediante DoubleTake en modo daemon: descubrimiento mDNS,
   emparejamiento por PIN, credenciales privadas por TV y estado en vivo.
-- El volumen de la TV no se modifica al iniciar AirPlay. La TV aparece como una
-  salida PipeWire temporal y se selecciona sola; se puede volver al altavoz o a
-  los auriculares desde el panel de audio normal de Omarchy. Al terminar se
-  restaura la salida anterior si seguía seleccionada.
-- Cuando el motor observa que la TV deja de ser la salida seleccionada, pausa el
-  audio AirPlay con `FLUSH` y lo reanuda con `RECORD`; el vídeo continúa. El
-  movimiento de los flujos de las aplicaciones lo hace PipeWire.
+- El volumen de la TV no se modifica al iniciar AirPlay. DoubleTake captura el
+  monitor de la salida de audio predeterminada de la laptop y envía ese audio a
+  la TV. El audio se reproduce en ambos lados; si quieres oír solo la TV,
+  silencia la laptop. No se crea una salida virtual ni se cambia la salida
+  predeterminada automáticamente.
+- El audio de Miracast sigue el mismo criterio: se captura la salida
+  predeterminada y también suena en la laptop.
 - Descubrimiento y conexión P2P por la API D-Bus de NetworkManager.
 - Perfil temporal (`persist=volatile`), ligado a la vida del cliente D-Bus,
   sin ruta predeterminada ni DNS del receptor. No usa un cliente DHCP externo.
@@ -32,11 +32,10 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 - Negociación RTSP/WFD de vídeo sin protección de contenido y audio AAC
   estéreo a 48 kHz cuando la TV y el sistema lo permiten.
 - Audio de la salida predeterminada mediante su monitor PulseAudio/PipeWire;
-  no captura el micrófono. En AirPlay se crea una salida virtual que representa
-  la TV, se selecciona como salida normal y DoubleTake captura su monitor; al
-  elegir el altavoz en el panel de audio, la TV deja de recibir audio. En
-  Miracast se sigue escuchando también en la laptop. El patrón de prueba genera
-  un tono sintético en vez de capturar audio del escritorio.
+  no captura el micrófono. En AirPlay y Miracast el audio se reproduce también
+  en la laptop; no se crea una salida virtual ni se mueven flujos entre salidas.
+  El patrón de prueba genera un tono sintético en vez de capturar audio del
+  escritorio.
 - H.264/x264 → MPEG-TS → RTP/UDP, con un máximo de 1080p30.
   Si el receptor no permite 1080p30 se intenta 720p30 y después VGA60.
 - Bitrate inicial 4 Mb/s, mínimo 1,5 y máximo 8. El descenso por presión
@@ -59,10 +58,10 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 
 - Solo audio AAC estéreo: si la TV solo anuncia LPCM o faltan componentes,
   se avisa y se intenta vídeo sin audio; algunas TV pueden rechazarlo.
-- En AirPlay la TV es una salida temporal y se puede cambiar a cualquier otra
-  salida desde el panel de audio de Omarchy, que mueve los flujos activos. Al
-  terminar se retira la salida virtual. En Miracast se sigue escuchando también
-  en la laptop y la captura queda ligada a la salida elegida al comenzar.
+- En AirPlay y Miracast el audio se captura de la salida predeterminada y se
+  reproduce también en la laptop. Si cambias de salida durante la sesión, la
+  captura sigue la nueva salida; para oír solo la TV, silencia la laptop. No se
+  crea ni se selecciona una salida virtual.
 - La captura del audio de salida incluye todos los sonidos que se reproduzcan
   por ella, incluidas notificaciones. No usa el permiso de pantalla para audio.
 - AirPlay necesita el binario `doubletake` parcheado, `openh264enc` y `pactl`.
@@ -188,12 +187,10 @@ distribución actual de la barra.
    campo que aparece en el widget.
 4. Elegir la pantalla en el selector XDG Portal que abre DoubleTake. Para
    escritorio extendido, elegir el monitor virtual si se ha creado.
-5. Reproducir audio. La TV aparece en el panel de audio de Omarchy como una
-   salida más y se selecciona automáticamente; el volumen y el mute de esa
-   salida controlan el audio enviado. El volumen propio de la TV no se modifica.
-   Puedes volver al altavoz o a los auriculares desde ese mismo panel; la TV
-   dejará de recibir audio. Al detener se restaura la salida anterior si seguía
-   seleccionada.
+5. Reproducir audio. El sonido se envía a la TV y también suena en la laptop.
+   Si quieres oír solo la TV, silencia la laptop. El volumen propio de la TV no
+   se modifica. No se crea una salida virtual ni se cambia la salida de audio
+   predeterminada.
 
 La primera conexión guarda credenciales privadas para no repetir el PIN.
 
