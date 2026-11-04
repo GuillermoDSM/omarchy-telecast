@@ -7,6 +7,18 @@ description = "Experimental AirPlay and Wi-Fi Display sender for the Omarchy she
 
 [dependencies]
 anyhow = "1"
+chacha20poly1305 = "0.10"
+ed25519-dalek = "2"
+hkdf = "0.12"
+md5 = "0.7"
+mdns-sd = "0.21"
+num-bigint = "0.4"
+plist = "1.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+subtle = "2"
+x25519-dalek = "2"
+zeroize = { version = "1", features = ["derive"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
 gstreamer = { version = "0.25", features = ["v1_24"] }
 gstreamer-app = { version = "0.25", features = ["v1_24"] }

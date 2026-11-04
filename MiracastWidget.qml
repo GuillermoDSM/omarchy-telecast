@@ -294,11 +294,8 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.barIcon
-    tooltipText: "Enviar pantalla · " + root.service.statusLabel
-      + (root.service.streaming ? " · " + Model.bitrate(root.service.kbps) : "")
-      + "\n" + root.service.detail
     foreground: root.service.phase === "error" ? Commons.Color.urgent : root.barForeground
-    active: root.active
+    active: root.service.streaming
     useActiveColor: true
     activeColor: Commons.Color.accent
     onPressed: function(mouseButton) {
@@ -364,12 +361,6 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             onHovered: function(on) { if (on) root.setHeaderCursor() }
             onToggled: root.toggleActive()
-
-            PanelToolTip {
-              visible: powerSwitch.containsMouse
-              text: root.active ? "Desactivar envío de pantalla" : "Activar envío de pantalla"
-              fontFamily: root.fontFamily
-            }
           }
 
           Column {
@@ -408,8 +399,7 @@ Panel {
 
         Text {
           width: parent.width
-          visible: root.service.warning === ""
-            && (root.service.phase === "error" || (root.service.busy && !root.service.streaming))
+          visible: root.service.warning === "" && root.service.phase === "error"
           text: root.service.detail
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
@@ -451,23 +441,6 @@ Panel {
             dev: root.connectedReceiver
             rowIndex: 0
             sectionName: "connected"
-          }
-
-          Text {
-            width: parent.width
-            visible: root.service.streaming
-            text: root.service.resolution === "AirPlay"
-              ? (root.service.airplayAudio
-                  ? "AirPlay · audio y vídeo. El audio también suena en la laptop; silencia la laptop para oír solo la TV."
-                  : "AirPlay · vídeo sin audio.")
-              : root.service.resolution + " · " + Model.bitrate(root.service.kbps)
-                + (root.service.feedback ? " · RTCP" : "")
-                + ". El audio también suena en la laptop."
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
           }
         }
 
@@ -521,12 +494,6 @@ Panel {
           spacing: Style.space(10)
           visible: root.availableReceivers.length > 0
 
-          PanelSectionHeader {
-            text: "DISPONIBLES"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
           ListView {
             id: availableList
             width: parent.width
@@ -558,10 +525,9 @@ Panel {
         Text {
           width: parent.width
           visible: root.connectedReceiver === null && root.availableReceivers.length === 0
-          text: !root.service.enabled ? "Activa el envío de pantalla para buscar TVs."
-            : root.service.discovering
-            ? "Buscando TVs AirPlay y Miracast…"
-            : "Pon la TV en AirPlay o Compartir pantalla. Selecciona una TV para conectar."
+          text: root.service.enabled && root.service.discovering
+            ? "Buscando..."
+            : "No hay pantallas disponibles"
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: Qt.darker(root.foreground, 1.5)

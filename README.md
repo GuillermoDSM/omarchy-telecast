@@ -1,16 +1,17 @@
 # Omarchy Enviar pantalla — experimental
 
-Plugin `astro67.miracast`: emisor Wi-Fi Display propio en Rust para Miracast y
-backend AirPlay basado en una versión parcheada de DoubleTake. El identificador
+Plugin `astro67.miracast`: emisores Wi-Fi Display y AirPlay experimental en Rust,
+con DoubleTake parcheado como respaldo. El identificador
 del plugin se conserva por compatibilidad.
 
-**La Samsung UTU7000 funciona por AirPlay en las pruebas realizadas; Miracast
+**DoubleTake funcionó con la Samsung UTU7000 en pruebas anteriores; el backend Rust no se ha probado con esa TV. Miracast
 falló en la negociación Wi-Fi Direct de esa misma TV.** Miracast se mantiene como
 respaldo para receptores que no anuncien AirPlay. No es una implementación
 certificada ni está verificada con todas las Samsung, LG y Sony.
 
-El motor Miracast no usa FluxCast ni GNOME Network Displays. AirPlay usa
-DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
+El motor Miracast no usa FluxCast ni GNOME Network Displays. El backend AirPlay
+Rust contiene código derivado de DoubleTake bajo LGPL-3.0-or-later; consulta
+`engine/src/airplay_native/NOTICE.md`.
 
 ## Implementado
 
@@ -23,15 +24,11 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
   en el widget mientras el motor sigue buscando, y se puede conectar en cuanto
   aparece uno. La búsqueda se cancela al iniciar la conexión y su ventana es de
   12 segundos.
-- Backend AirPlay mediante DoubleTake en modo daemon: descubrimiento mDNS,
-  emparejamiento por PIN, credenciales privadas por TV y estado en vivo.
-- El volumen de la TV no se modifica al iniciar AirPlay. DoubleTake captura el
-  monitor de la salida de audio predeterminada de la laptop y envía ese audio a
-  la TV. El audio se reproduce en ambos lados; si quieres oír solo la TV,
-  silencia la laptop. No se crea una salida virtual ni se cambia la salida
-  predeterminada automáticamente.
-- El audio de Miracast sigue el mismo criterio: se captura la salida
-  predeterminada y también suena en la laptop.
+- Backend AirPlay Rust por defecto: mDNS, PIN/HAP, vídeo H.264 y audio ALAC
+  para receptores sin FPSAP. DoubleTake sigue disponible como respaldo explícito.
+- El backend Rust crea `Omarchy-AirPlay-TV`; selecciona esa salida para enviar
+  audio a la TV. No mueve flujos ni cambia explícitamente la salida predeterminada.
+- Miracast captura la salida predeterminada y también suena en la laptop.
 - Descubrimiento y conexión P2P por la API D-Bus de NetworkManager.
 - Perfil temporal (`persist=volatile`), ligado a la vida del cliente D-Bus,
   sin ruta predeterminada ni DNS del receptor. No usa un cliente DHCP externo.
@@ -39,11 +36,8 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 - Selector de pantalla XDG Desktop Portal; PipeWire remoto restringido.
 - Negociación RTSP/WFD de vídeo sin protección de contenido y audio AAC
   estéreo a 48 kHz cuando la TV y el sistema lo permiten.
-- Audio de la salida predeterminada mediante su monitor PulseAudio/PipeWire;
-  no captura el micrófono. En AirPlay y Miracast el audio se reproduce también
-  en la laptop; no se crea una salida virtual ni se mueven flujos entre salidas.
-  El patrón de prueba genera un tono sintético en vez de capturar audio del
-  escritorio.
+- La captura usa monitores de salida PulseAudio/PipeWire, no el micrófono.
+  El patrón de vídeo AirPlay no captura pantalla; usa el monitor de TV para audio.
 - H.264/x264 → MPEG-TS → RTP/UDP, con un máximo de 1080p30.
   Si el receptor no permite 1080p30 se intenta 720p30 y después VGA60.
 - Bitrate inicial 4 Mb/s, mínimo 1,5 y máximo 8. El descenso por presión
@@ -64,30 +58,32 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
 
 ## Límites importantes
 
-- Solo audio AAC estéreo: si la TV solo anuncia LPCM o faltan componentes,
+- Miracast usa audio AAC estéreo: si la TV solo anuncia LPCM o faltan componentes,
   se avisa y se intenta vídeo sin audio; algunas TV pueden rechazarlo.
 - La búsqueda AirPlay se actualiza en cuanto mDNS ve la TV. Miracast depende del
   barrido P2P de NetworkManager, que puede tardar hasta 8 segundos en publicar
   el receptor; mientras tanto el widget sigue respondiendo y permite cancelar.
-- En AirPlay y Miracast el audio se captura de la salida predeterminada y se
-  reproduce también en la laptop. Si cambias de salida durante la sesión, la
-  captura sigue la nueva salida; para oír solo la TV, silencia la laptop. No se
-  crea ni se selecciona una salida virtual.
+- AirPlay Rust captura únicamente su salida dedicada; Miracast y DoubleTake por
+  defecto capturan la salida predeterminada. El audio Rust no se ha validado
+  contra distorsión ni sincronización con una TV.
 - La captura del audio de salida incluye todos los sonidos que se reproduzcan
   por ella, incluidas notificaciones. No usa el permiso de pantalla para audio.
-- AirPlay necesita el binario `doubletake` parcheado, `openh264enc` y `pactl`.
-  Si falta alguno, `doctor` lo indica y Miracast puede seguir funcionando.
-- AirPlay abre su propio selector de pantalla (XDG Portal) además del widget.
-  El monitor virtual de Miracast se puede elegir en ese selector, pero unificar
-  ambos selectores requiere una integración más profunda.
-- La primera conexión AirPlay pide el PIN que muestra la TV. Las credenciales
-  se guardan en `~/.local/state/omarchy-miracast/airplay-credentials.json`
-  con permisos privados; no las compartas.
+- AirPlay Rust necesita `pw-cli`, `pw-dump`, `pipewire-pulse`, `pactl`,
+  `x264enc`, `pipewiresrc` y `pulsesrc`. `doctor` consulta su disponibilidad.
+- Por defecto AirPlay crea una pantalla virtual extendida temporal y abre el selector XDG
+  Portal. Hay que elegir `OMARCHY-WFD-<pid>`; se rechaza cualquier otra pantalla.
+  Para evitar restaurar una selección antigua, se solicita el permiso en cada
+  conexión. Para el respaldo DoubleTake es necesario recompilar el parche incluido.
+- La primera conexión AirPlay pide el PIN. Rust guarda credenciales cifradas y
+  una clave aleatoria separada en el directorio de estado privado (0700, archivos
+  0600). No usa un llavero del sistema: otro proceso del mismo usuario puede
+  leer ambas; no compartas ni el directorio ni sus copias. DoubleTake usa su
+  propio archivo `airplay-credentials.json` y no comparte estas credenciales.
 - Si Tailscale desvía `192.168.1.0/24` por su interfaz, AirPlay no alcanza la
   TV aunque esté en la misma Wi-Fi. El plugin lo detecta y avisa; no desactiva
   Tailscale ni cambia rutas por su cuenta.
-- AirPlay depende de DoubleTake (LGPL-3.0-or-later), no del motor Rust. Sus
-  límites de códecs y latencia son los de ese emisor, no los del motor Miracast.
+- El backend Rust rechaza receptores que anuncian FPSAP/FairPlay; prueba el
+  respaldo DoubleTake. El PIN/HAP nativo no cuenta con auditoría de seguridad.
 - El puerto del servicio AirPlay de la TV puede cambiar entre sesiones. El
   plugin usa el puerto anunciado por mDNS; si una búsqueda no la encuentra,
   conviene reintentar antes de concluir que la TV no está disponible.
@@ -110,15 +106,39 @@ DoubleTake, un emisor Go independiente con licencia LGPL-3.0-or-later.
   existente. Nunca se elimina una salida que no pertenezca a esta sesión.
   Un SIGKILL no permite ejecutar esa limpieza: el perfil P2P cae por D-Bus,
   pero puede ser necesario retirar manualmente el monitor virtual.
-- La duplicación se deja a las opciones nativas de pantallas de Omarchy;
-  el plugin solo abre ese panel, no implementa un segundo modo mirror.
+- En mirror AirPlay se comparte la pantalla elegida en el portal, sin cambiar
+  la disposición física de las pantallas; Miracast mantiene el modo extendido.
+
+### Opciones experimentales AirPlay
+
+- `OMARCHY_AIRPLAY_BACKEND=native` (o `rust`) selecciona Rust, el predeterminado.
+  `OMARCHY_AIRPLAY_BACKEND=doubletake` selecciona el respaldo explícitamente;
+  no hay fallback silencioso. Reinicia el motor tras cambiarlo.
+- El selector **Pantalla AirPlay** del widget permite duplicar una pantalla
+  elegida en el portal o extender mediante la pantalla temporal. La selección
+  se conserva mientras funciona la shell y se envía con cada conexión; no
+  cambia la configuración de Hyprland. Al cambiar de modo durante una sesión,
+  el widget desconecta y reconecta; hay que elegir otra vez la pantalla en el
+  portal. Miracast solo admite extensión. Para
+  clientes del motor que omitan `display_mode`, `OMARCHY_AIRPLAY_DISPLAY`
+  acepta `mirror` o `extended` (por defecto). Hay que recompilar el DoubleTake
+  parcheado para evitar restaurar una selección antigua en mirror.
+- AirPlay Rust crea la salida temporal `Omarchy-AirPlay-TV`; requiere `pw-cli` y
+  `pw-dump`. Selecciónala en Sonido para enviar audio a la TV, o selecciona la
+  laptop para devolverlo. El selector de Omarchy mueve los flujos de aplicación;
+  el plugin no modifica la salida predeterminada por su cuenta. Es experimental
+  y puede presentar distorsión.
+- Para probar esa salida con DoubleTake, establece
+  `OMARCHY_AIRPLAY_EXPERIMENTAL_TV_SINK=1`. Por defecto DoubleTake conserva la
+  captura anterior de la salida predeterminada.
 
 ## Requisitos
 
 Omarchy con plugins, Hyprland con `hyprctl output create headless` y `hl.monitor`,
 NetworkManager con Wi-Fi P2P y Polkit, un portal ScreenCast de Hyprland y
-PipeWire. AirPlay necesita además el binario parcheado `doubletake`,
-`openh264enc` y `pactl`. Los componentes se consultan con `doctor`.
+PipeWire. AirPlay Rust necesita `pw-cli`, `pw-dump`, `pipewire-pulse`, `pactl`,
+`x264enc` y `pulsesrc`. DoubleTake requiere además su binario parcheado y
+`openh264enc`. Los componentes se consultan con `doctor`.
 
 Paquetes de ejecución habituales en Arch:
 
@@ -140,6 +160,7 @@ Dependencias Rust fijadas en `engine/Cargo.lock`.
 tools/build_airplay.sh
 cargo test --manifest-path engine/Cargo.toml --locked
 node tests/model.test.cjs
+python3 tests/audio_pipewire_test.py
 cargo build --manifest-path engine/Cargo.toml --locked
 python3 tests/worker_test.py
 cargo run --manifest-path engine/Cargo.toml -- self-test
@@ -150,8 +171,17 @@ omarchy plugin validate .
 `tools/build_airplay.sh` descarga el commit fijado de DoubleTake, aplica
 `third_party/doubletake/omarchy.patch` y deja el binario en
 `engine/target/release/doubletake`. `install.sh` lo copia junto al motor. Si no
-se compila, el plugin sigue mostrando Miracast pero AirPlay aparecerá como no
-disponible en el diagnóstico.
+se compila, el backend Rust puede seguir funcionando, pero el respaldo
+DoubleTake no estará disponible.
+
+La prueba opcional del backend Rust usa únicamente un receptor de prueba local,
+un bus D-Bus privado y servidores PipeWire/WirePlumber aislados, con monitores
+ALSA/Bluetooth deshabilitados. Requiere el ejecutable `test-receiver` de
+DoubleTake, `dbus-run-session`, `pipewire-pulse` y `wireplumber`:
+
+```bash
+AIRPLAY_TEST_RECEIVER=/ruta/al/test-receiver python3 tests/native_airplay_loopback_test.py
+```
 
 La captura de audio requiere `pactl` (paquete `libpulse` en Arch), un servidor
 PulseAudio o `pipewire-pulse` y un codificador AAC (`fdkaacenc`, `avenc_aac`
@@ -183,8 +213,12 @@ bash install.sh
 ```
 
 El instalador se niega a sobrescribir un directorio existente. Instala solo los
-archivos de interfaz y el binario, no el árbol de compilación observado por el
-shell. El motor se inicia al abrir el widget y no configura autostart ni systemd.
+archivos de interfaz, los binarios y el código fuente del motor con su lockfile
+en `source/engine`; no instala el árbol de compilación observado por el shell.
+Las licencias y avisos se incluyen en `licenses/`. Desde ese directorio de
+fuentes se puede recompilar el motor con `cargo build --release --locked`, usando
+las dependencias y herramientas indicadas arriba. El motor se inicia al abrir
+el widget y no configura autostart ni systemd.
 Antes de habilitarlo, guarda una copia `shell.json.before-miracast.*` de la
 distribución actual de la barra.
 
@@ -192,16 +226,37 @@ distribución actual de la barra.
 
 ### AirPlay
 
+El widget usa Rust por defecto. Para comprobar explícitamente el backend o
+recuperar DoubleTake desde una terminal sin cambiar el shell en ejecución:
+
+```bash
+OMARCHY_AIRPLAY_BACKEND=native engine/target/debug/omarchy-miracast doctor
+OMARCHY_AIRPLAY_BACKEND=doubletake engine/target/debug/omarchy-miracast doctor
+OMARCHY_AIRPLAY_BACKEND=doubletake engine/target/debug/omarchy-miracast serve
+```
+
+El último comando acepta las solicitudes JSONL de la sección Control. Para
+usar el respaldo desde el widget, la variable debe estar en el entorno del
+proceso de Omarchy Shell que inicia el motor; cambiarla en una terminal no
+modifica un shell ya iniciado. La selección Rust o DoubleTake no migra PIN ni
+credenciales entre ambos.
+
+Para volver al backend anterior, compila primero `tools/build_airplay.sh` y
+ejecuta el motor con `OMARCHY_AIRPLAY_BACKEND=doubletake`. Para el widget esa
+variable debe estar en el entorno de Omarchy Shell al iniciarse; cambiarla puede
+requerir reiniciar el shell. No hay cambio automático de backend. Para volver a
+una instalación anterior completa se necesita una copia previa del directorio
+del plugin; el instalador no la crea ni sobrescribe una instalación existente.
+
 1. Comprobar que la TV está en la misma Wi-Fi y que AirPlay está activado.
 2. Abrir el widget y esperar a que aparezca la TV con la etiqueta **AIRPLAY**.
 3. Seleccionarla. La primera vez, la TV muestra un PIN: introducirlo en el
    campo que aparece en el widget.
-4. Elegir la pantalla en el selector XDG Portal que abre DoubleTake. Para
-   escritorio extendido, elegir el monitor virtual si se ha creado.
-5. Reproducir audio. El sonido se envía a la TV y también suena en la laptop.
-   Si quieres oír solo la TV, silencia la laptop. El volumen propio de la TV no
-   se modifica. No se crea una salida virtual ni se cambia la salida de audio
-   predeterminada.
+4. Elegir **Extender** o **Duplicar**, y seleccionar la pantalla indicada en el
+   portal. En extensión, elegir `OMARCHY-WFD-<pid>`.
+5. Seleccionar `Omarchy-AirPlay-TV` en las salidas de audio y reproducir sonido.
+   Las aplicaciones con rutas propias pueden permanecer en la laptop. Cambiar
+   a la salida de la laptop deja de enviar a la TV el audio que ya no va al sink.
 
 La primera conexión guarda credenciales privadas para no repetir el PIN.
 
@@ -242,8 +297,8 @@ El backend ofrece `serve` (JSONL por stdin/stdout), `doctor`, `scan` y
 
 `scan` devuelve receptores de ambos protocolos con el campo `protocol`.
 Durante AirPlay, el estado `pairing` indica que la TV espera el PIN; el comando
-`pin` lo envía. El estado `streaming` solo confirma que DoubleTake aceptó la
-sesión y comenzó a enviar.
+`pin` lo envía. El estado `streaming` solo indica que el backend seleccionado
+estableció la sesión; no confirma la reproducción en la TV.
 
 No hay socket de escucha de control en la LAN ni contraseñas en argumentos.
 El historial del widget es limitado y reside en memoria. Cada conexión crea

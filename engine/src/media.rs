@@ -23,6 +23,7 @@ pub struct Capture {
     session: Session<Screencast>,
     fd: Option<OwnedFd>,
     node: u32,
+    mapping: Option<String>,
 }
 
 impl Capture {
@@ -38,6 +39,7 @@ impl Capture {
             session,
             fd: None,
             node: 0,
+            mapping: None,
         })
     }
 
@@ -46,6 +48,16 @@ impl Capture {
         expected_output: &str,
         expected_position: (i32, i32),
     ) -> Result<()> {
+        self.select_monitor(Some((expected_output, expected_position)))
+            .await
+    }
+
+    /// Let the user explicitly choose any monitor in the portal (mirror mode).
+    pub async fn select_mirror(&mut self) -> Result<()> {
+        self.select_monitor(None).await
+    }
+
+    async fn select_monitor(&mut self, expected: Option<(&str, (i32, i32))>) -> Result<()> {
         let modes = self.portal.available_cursor_modes().await?;
         let cursor = if modes.contains(CursorMode::Embedded) {
             CursorMode::Embedded
@@ -73,13 +85,16 @@ impl Capture {
             "El portal no entregó exactamente una pantalla"
         );
         let stream = &response.streams()[0];
-        validate_stream(
-            expected_output,
-            expected_position,
-            stream.mapping_id(),
-            stream.position(),
-            stream.size(),
-        )?;
+        if let Some((expected_output, expected_position)) = expected {
+            validate_stream(
+                expected_output,
+                expected_position,
+                stream.mapping_id(),
+                stream.position(),
+                stream.size(),
+            )?;
+        }
+        self.mapping = stream.mapping_id().map(str::to_owned);
         // The portal is a restricted remote: never search the unrestricted
         // PipeWire graph, which could accidentally choose a webcam.
         self.node = stream.pipe_wire_node_id();
@@ -89,6 +104,13 @@ impl Capture {
                 .await?,
         );
         Ok(())
+    }
+
+    /// Connector name of the monitor the user chose in the portal, when the
+    /// compositor reports it (Hyprland does). Used to release an unused virtual
+    /// output when the user chooses to mirror an existing monitor instead.
+    pub fn mapping(&self) -> Option<&str> {
+        self.mapping.as_deref()
     }
 
     pub fn source(&self) -> Result<Source> {

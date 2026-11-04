@@ -2,12 +2,13 @@ diff --git i/cmd/doubletake/main.go w/cmd/doubletake/main.go
 index 20053db..5c7b9d4 100644
 --- i/cmd/doubletake/main.go
 +++ w/cmd/doubletake/main.go
-@@ -73,6 +73,8 @@ func main() {
+@@ -73,6 +73,9 @@ func main() {
  	noEncrypt := flag.Bool("no-encrypt", false, "Disable RTSP header encryption (debugging only; video frames are always encrypted)")
  	directKey := flag.Bool("direct-key", false, "Use shk/shiv directly without SHA-512 derivation")
  	noAudio := flag.Bool("no-audio", false, "Disable audio streaming")
 +	audioSource := flag.String("audio-source", "", "PulseAudio/PipeWire monitor source to capture instead of the default sink")
 +	preserveReceiverVolume := flag.Bool("preserve-receiver-volume", false, "Leave the receiver's volume unchanged instead of setting it to 0 dB")
++	flag.Bool("omarchy-output-guard", false, "Enable Omarchy output selection guard")
  	portRange := flag.String("port-range", "", "Local UDP port range for receiver timing/audio (e.g. \"60000-60010\"); empty = OS ephemeral. Needs at least 3 ports.")
  	debug := flag.Bool("debug", false, "Enable verbose debug logging")
  	daemonize := flag.Bool("daemonize", false, "Run as background daemon with Unix socket control interface")
@@ -822,3 +823,74 @@ index f00cc8a..251340d 100644
  func (d *Daemon) handleSetMute(req Request, muted bool) Response {
  	d.mu.Lock()
  
+diff --git a/internal/airplay/capture.go b/internal/airplay/capture.go
+--- a/internal/airplay/capture.go
++++ b/internal/airplay/capture.go
+@@ -2522,7 +2522,7 @@
+ 		"multiple":     dbus.MakeVariant(false),
+ 		"cursor_mode":  dbus.MakeVariant(cursorMode),
+ 	}
+-	if portalVersion >= 4 {
++	if portalVersion >= 4 && os.Getenv("OMARCHY_AIRPLAY_OUTPUT") == "" && os.Getenv("OMARCHY_AIRPLAY_PORTAL_FRESH") == "" {
+ 		selectOpts["persist_mode"] = dbus.MakeVariant(uint32(2))
+ 		if restoreToken != "" {
+ 			selectOpts["restore_token"] = dbus.MakeVariant(restoreToken)
+@@ -2628,6 +2628,10 @@
+ 		}
+ 	}
+ 
++	if err := validateOmarchyOutput(os.Getenv("OMARCHY_AIRPLAY_OUTPUT"), streamProperties); err != nil {
++		return 0, nil, nil, "", err
++	}
++
+ 	if dimensions != nil {
+ 		if width, height, ok := portalStreamDimensions(streamProperties); ok {
+ 			dimensions[0], dimensions[1] = width, height
+@@ -2649,6 +2653,17 @@
+ 	return nodeID, pwFile, portalSession, newRestoreToken, nil
+ }
+ 
++func validateOmarchyOutput(expected string, properties map[string]dbus.Variant) error {
++	if expected == "" {
++		return nil
++	}
++	value, ok := properties["mapping_id"]
++	if !ok || value.Value() != expected {
++		return fmt.Errorf("selecciona el monitor virtual %s; no se transmitirá otra pantalla", expected)
++	}
++	return nil
++}
++
+ func portalStreamDimensions(properties map[string]dbus.Variant) (int, int, bool) {
+ 	variant, ok := properties["size"]
+ 	if !ok {
+diff --git a/internal/airplay/omarchy_output_test.go b/internal/airplay/omarchy_output_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/airplay/omarchy_output_test.go
+@@ -0,0 +1,25 @@
++package airplay
++
++import (
++	"testing"
++
++	"github.com/godbus/dbus/v5"
++)
++
++func TestValidateOmarchyOutput(t *testing.T) {
++	tests := []struct {
++		expected string
++		properties map[string]dbus.Variant
++		valid bool
++	}{
++		{"", nil, true},
++		{"virtual", map[string]dbus.Variant{"mapping_id": dbus.MakeVariant("virtual")}, true},
++		{"virtual", map[string]dbus.Variant{"mapping_id": dbus.MakeVariant("physical")}, false},
++		{"virtual", nil, false},
++	}
++	for _, tt := range tests {
++		if (validateOmarchyOutput(tt.expected, tt.properties) == nil) != tt.valid {
++			t.Errorf("unexpected result for %#v", tt)
++		}
++	}
++}

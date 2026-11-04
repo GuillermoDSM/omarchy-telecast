@@ -20,6 +20,15 @@ function protocolLabel(protocol) {
   return protocol === "airplay" ? "AIRPLAY" : "MIRACAST"
 }
 
+// The portal decides whether to mirror an existing monitor or extend into the
+// temporary output, so the connect request carries no display mode.
+function connectRequest(receiver, testPattern) {
+  return {
+    command: "connect", protocol: receiver.protocol, mac: receiver.mac,
+    ip: receiver.ip, port: receiver.port, name: receiver.name, test: !!testPattern
+  }
+}
+
 function peers(value) {
   if (!Array.isArray(value)) return []
   var result = []

@@ -54,9 +54,62 @@ pub async fn monitors() -> Result<Vec<Monitor>> {
         .context("Respuesta de monitores inválida")
 }
 
+/// Compact snapshot of the active monitor layout. Any mirror/extended toggle,
+/// mode change or hotplug changes it; the media loop uses that to rebuild the
+/// capture pipeline before the compositor's stale stream freezes the TV.
+pub fn signature(monitors: &[Monitor]) -> String {
+    let mut signature = String::new();
+    for monitor in monitors {
+        if monitor.disabled {
+            continue;
+        }
+        signature.push_str(&format!(
+            "{}:{}x{}@{:.2}:{},{}:{}|",
+            monitor.name,
+            monitor.width,
+            monitor.height,
+            monitor.refresh_rate,
+            monitor.x,
+            monitor.y,
+            monitor.mirror_of
+        ));
+    }
+    signature
+}
+
+pub async fn layout_signature() -> Result<String> {
+    Ok(signature(&monitors().await?))
+}
+
+/// Remove headless outputs left by an engine that died before cleanup. Only
+/// names in this plugin's namespace whose owning PID no longer exists are
+/// touched; a live session keeps its output.
+pub async fn cleanup_stale() {
+    let Ok(current) = monitors().await else {
+        return;
+    };
+    for monitor in current {
+        let Some(pid) = monitor
+            .name
+            .strip_prefix("OMARCHY-WFD-")
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id() || std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            continue;
+        }
+        let _ = remove_owned(&monitor.name, Some(monitor.id)).await;
+    }
+}
+
 impl VirtualDisplay {
+    pub fn session_name() -> String {
+        format!("OMARCHY-WFD-{}", std::process::id())
+    }
+
     pub async fn create() -> Result<Self> {
-        let name = format!("OMARCHY-WFD-{}", std::process::id());
+        let name = Self::session_name();
         let existing = monitors().await?;
         ensure!(
             !existing.iter().any(|m| m.name == name),

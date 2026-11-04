@@ -17,7 +17,7 @@ QtObject {
   property bool shuttingDown: false
   property var queued: []
   property string phase: "offline"
-  property string detail: "AirPlay y Miracast experimentales · el audio AirPlay también suena en la laptop"
+  property string detail: "AirPlay y Miracast experimentales"
   property bool busy: false
   property bool discovering: false
   property var receivers: []
@@ -29,6 +29,8 @@ QtObject {
   property string pinKind: "pin"
   property bool airplayAudio: false
   property bool testPattern: false
+  property var activeReceiver: null
+  property bool activeTestPattern: false
   property int kbps: 0
   property bool feedback: false
   property string resolution: ""
@@ -100,16 +102,10 @@ QtObject {
     root.airplayAudio = false
     root.discovering = false
     root.busy = true
+    root.activeReceiver = receiver
+    root.activeTestPattern = root.testPattern
     root.phase = receiver.protocol === "airplay" ? "connecting" : "starting"
-    root.send({
-      command: "connect",
-      protocol: receiver.protocol,
-      mac: receiver.mac,
-      ip: receiver.ip,
-      port: receiver.port,
-      name: receiver.name,
-      test: root.testPattern
-    })
+    root.send(Model.connectRequest(receiver, root.testPattern))
   }
 
   function submitPin(code) {
@@ -166,6 +162,7 @@ QtObject {
         root.detail = Model.plain(event.detail, 1200)
         root.busy = Boolean(event.busy)
         root.discovering = event.discovering === true || root.phase === "searching"
+        if (root.phase === "idle" || root.phase === "error") root.activeReceiver = null
         if (root.phase !== "pairing") root.pinRequired = false
         root.appendHistory(root.detail)
       } else if (event.event === "peers") {
@@ -213,6 +210,7 @@ QtObject {
       root.discovering = false
       root.queued = []
       root.pinRequired = false
+      root.activeReceiver = null
       root.receivers = []
       root.selectedKey = ""
       if (intentional) {
@@ -234,7 +232,7 @@ QtObject {
     function disable(): string { root.setEnabled(false); return "ok" }
     function status(): string {
       return JSON.stringify({phase: root.phase, detail: root.detail, busy: root.busy,
-        enabled: root.enabled, discovering: root.discovering, receivers: root.receivers,
+         enabled: root.enabled, discovering: root.discovering, receivers: root.receivers,
         selectedKey: root.selectedKey, pinRequired: root.pinRequired,
         kbps: root.kbps, feedback: root.feedback,
         warning: root.warning, logPath: root.logPath})

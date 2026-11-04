@@ -3,7 +3,6 @@ set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 destination="${1:-$root/engine/target/release/doubletake}"
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-miracast/doubletake"
 commit=962b47f609f88098d809e0ef680280539bb685fd
 
 if ! command -v go >/dev/null 2>&1; then
@@ -15,18 +14,16 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p -- "$(dirname -- "$destination")" "$(dirname -- "$cache")"
-if [[ ! -d "$cache/.git" ]]; then
-  git clone --filter=blob:none --no-checkout https://github.com/jmh-zero/doubletake.git "$cache"
-fi
-git -C "$cache" fetch --depth=1 origin "$commit"
-git -C "$cache" checkout --detach "$commit"
-git -C "$cache" reset --hard "$commit"
-git -C "$cache" clean -fdx
-git -C "$cache" apply --check "$root/third_party/doubletake/omarchy.patch"
-git -C "$cache" apply "$root/third_party/doubletake/omarchy.patch"
+mkdir -p -- "$(dirname -- "$destination")"
+work=$(mktemp -d "${TMPDIR:-/tmp}/omarchy-doubletake-build.XXXXXX")
+trap 'rm -rf -- "$work"' EXIT
+git init -q "$work/source"
+git -C "$work/source" fetch --depth=1 https://github.com/jmh-zero/doubletake.git "$commit"
+git -C "$work/source" checkout --detach "$commit"
+git -C "$work/source" apply --check "$root/third_party/doubletake/omarchy.patch"
+git -C "$work/source" apply "$root/third_party/doubletake/omarchy.patch"
 (
-  cd "$cache"
+  cd "$work/source"
   go build -trimpath -ldflags='-s -w' -o "$destination" ./cmd/doubletake
 )
 chmod 755 -- "$destination"

@@ -18,11 +18,15 @@ parche añade:
 - tono de prueba a `volume=0.01`, para que el patrón de depuración no suene a
   máximo;
 - las mismas opciones en el modo daemon y en sus pruebas.
+- selección obligatoria de la salida virtual indicada por el plugin, sin
+  restaurar capturas anteriores y rechazando otras salidas del portal.
 
-La ruta de producción usa la captura estándar de DoubleTake: el monitor de la
-salida de audio predeterminada. El parche conserva opciones experimentales de
-captura y control de audio para diagnóstico, pero el plugin no las pasa; en
-particular, no crea una salida virtual ni pausa el transporte AirPlay.
+Con `OMARCHY_AIRPLAY_EXPERIMENTAL_TV_SINK=1` el plugin pasa `-audio-source`
+con el monitor de la salida temporal `Omarchy-AirPlay-TV`; por defecto captura
+la salida predeterminada. El parche añade una rama de silencio para mantener activa
+la captura cuando no hay aplicaciones en esa salida. El plugin no pausa el
+transporte AirPlay ni cambia el volumen del receptor. Esta ruta no garantiza por
+sí sola que todos los receptores reproduzcan audio sin distorsión.
 
 El parche se aplica sobre el commit base y se compila con Go 1.25 o posterior.
 

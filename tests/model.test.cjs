@@ -30,4 +30,8 @@ assert.equal(peers[1].mac, "BE:7E:8B:BE:29:2E");
 assert.equal(peers[1].name, "Samsung TV");
 assert.equal(peers[1].strength, 100);
 assert.equal(peers[1].protocol, "miracast");
+assert.equal(model.connectRequest(peers[0], false).display_mode, undefined);
+assert.equal(model.connectRequest(peers[1], true).display_mode, undefined);
+assert.equal(model.connectRequest(peers[1], true).test, true);
+assert.equal(model.connectRequest(peers[1], true).mac, peers[1].mac);
 console.log("Model: all tests passed");

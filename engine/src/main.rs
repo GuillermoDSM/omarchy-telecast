@@ -1,5 +1,6 @@
 mod abr;
 mod airplay;
+mod airplay_native;
 mod audio;
 mod display;
 mod media;
@@ -98,6 +99,8 @@ enum Request {
         name: String,
         #[serde(default)]
         test: bool,
+        #[serde(default)]
+        display_mode: Option<airplay::DisplayMode>,
     },
     Pin {
         pin: String,
@@ -438,6 +441,7 @@ async fn serve() -> Result<()> {
     if !airplay.is_streaming().await {
         audio::cleanup_stale().await;
     }
+    display::cleanup_stale().await;
     let warm_airplay = airplay.clone();
     tokio::spawn(async move {
         warm_airplay.warm().await;
@@ -561,9 +565,9 @@ async fn serve() -> Result<()> {
                         }
                     }
                     Request::Pin { .. } => {
-                        events.warning("No hay una conexión AirPlay activa");
+                        events.warning("No hay una solicitud de PIN AirPlay activa");
                     }
-                    Request::Connect { mac,protocol,ip,port,name,test } if job.is_none() => {
+                    Request::Connect { mac,protocol,ip,port,name,test,display_mode } if job.is_none() => {
                         if let Some(mut active) = discovery.take() {
                             active.cancel.cancel();
                             if timeout(Duration::from_secs(1), &mut active.task).await.is_err() {
@@ -594,12 +598,16 @@ async fn serve() -> Result<()> {
                                     port,
                                     test,
                                     display_name,
+                                    mac,
+                                    display_mode,
                                     session_events,
                                     cancel.clone(),
                                 ));
                                 job_terminal = false;
                                 job = Some((cancel,task));
                             }
+                        } else if protocol == "miracast" && display_mode == Some(airplay::DisplayMode::Mirror) {
+                            events.state("error", "Miracast solo admite pantalla extendida");
                         } else if protocol == "miracast" {
                             let cancel = CancellationToken::new();
                             let session_events = match session_log::SessionLog::open() {
@@ -718,6 +726,8 @@ mod tests {
 
     #[test]
     fn command_arguments_are_strict() {
+        assert!(matches!(serde_json::from_str::<Request>(r#"{"command":"connect","display_mode":"mirror"}"#), Ok(Request::Connect { display_mode: Some(airplay::DisplayMode::Mirror), .. })));
+        assert!(serde_json::from_str::<Request>(r#"{"command":"connect","display_mode":"other"}"#).is_err());
         assert!(
             serde_json::from_str::<Request>(
                 r#"{"command":"connect","mac":"00:11:22:33:44:55","test":true}"#
