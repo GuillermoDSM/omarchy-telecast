@@ -12,7 +12,7 @@ Panel {
   id: root
   moduleName: "astro67.miracast"
   ipcTarget: "astro67.miracast"
-  // The MiracastService singleton owns the shared IPC handler for scan/stop/
+  // The AirPlay service singleton owns the shared IPC handler for scan/stop/
   // status. The panel only needs the base class's open/close lifecycle.
   manageIpc: false
 
@@ -92,7 +92,7 @@ Panel {
       if (service.receivers[i].key === key) receiver = service.receivers[i]
     }
     if (!receiver) return
-    if (receiver.protocol === "airplay" ? !service.airplayReady : !service.prerequisitesReady) return
+    if (!service.airplayReady) return
     service.selectedKey = key
     root.close()
     service.connectSelected()
@@ -626,7 +626,7 @@ Panel {
       && root.focusSection === sectionName
       && root.selectedIndex === rowIndex
     readonly property bool canActivate: !!dev && (isConnected || (!root.service.busy
-      && (dev.protocol === "airplay" ? root.service.airplayReady : root.service.prerequisitesReady)))
+      && root.service.airplayReady))
     readonly property string actionTooltip: !dev ? "" : (isConnected ? "Desconectar" : (canActivate ? "Conectar" : ""))
 
     readonly property string statusText: {
@@ -638,10 +638,7 @@ Panel {
         return "Conectando…"
       }
       if (root.service.busy) return ""
-      return Model.protocolLabel(dev.protocol)
-        + (dev.protocol === "airplay"
-          ? (dev.model ? " · " + dev.model : "")
-          : " · " + dev.strength + "%")
+      return dev.model || "AirPlay"
     }
 
     readonly property color statusColor: isConnected

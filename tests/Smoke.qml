@@ -13,7 +13,7 @@ ShellRoot {
     interval: 50
     running: true
     onTriggered: {
-      var source = Quickshell.env("MIRACAST_SOURCE")
+      var source = Quickshell.env("CAST_SOURCE")
       var component = Qt.createComponent("file://" + source + "/MiracastWidget.qml")
       if (component.status !== Component.Ready) {
         console.error("SMOKE FAILED: " + component.errorString())
@@ -34,11 +34,10 @@ ShellRoot {
         return
       }
       root.controller.receive(JSON.stringify({event: "peers", peers: [
-        {mac: "BE:7E:8B:BE:29:2E", name: "Samsung <TV>", wfd: true, strength: 70}
+        {mac: "68:72:C3:A8:40:DF", name: "Samsung <TV>", model: "UTU7000", ip: "192.168.1.139", port: 7000}
       ]}))
       root.controller.receive(JSON.stringify({event: "state", phase: "streaming", busy: true, detail: "Simulated UI state"}))
-      root.controller.receive(JSON.stringify({event: "metrics", kbps: 3750, feedback: true, width: 1920, height: 1080, fps: 30}))
-      if (root.controller.receivers.length !== 1 || root.controller.kbps !== 3750 || !root.controller.streaming) {
+      if (root.controller.receivers.length !== 1 || !root.controller.streaming) {
         console.error("SMOKE FAILED: event delivery")
         Qt.exit(1)
         return

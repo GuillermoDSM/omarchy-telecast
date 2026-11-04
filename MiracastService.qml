@@ -17,23 +17,17 @@ QtObject {
   property bool shuttingDown: false
   property var queued: []
   property string phase: "offline"
-  property string detail: "AirPlay y Miracast experimentales"
+  property string detail: "AirPlay experimental"
   property bool busy: false
   property bool discovering: false
   property var receivers: []
   property string selectedKey: ""
   property var checks: []
-  property bool prerequisitesReady: false
   property bool airplayReady: false
   property bool pinRequired: false
   property string pinKind: "pin"
-  property bool airplayAudio: false
   property bool testPattern: false
   property var activeReceiver: null
-  property bool activeTestPattern: false
-  property int kbps: 0
-  property bool feedback: false
-  property string resolution: ""
   property string warning: ""
   property var history: []
   property string logPath: ""
@@ -92,19 +86,13 @@ QtObject {
 
   function connectSelected() {
     var receiver = root.selectedReceiver()
-    if (!root.enabled || root.shuttingDown || root.busy || !receiver) return
-    if (receiver.protocol === "airplay" ? !root.airplayReady : !root.prerequisitesReady) return
-    root.kbps = 0
-    root.feedback = false
-    root.resolution = ""
+    if (!root.enabled || root.shuttingDown || root.busy || !receiver || !root.airplayReady) return
     root.warning = ""
     root.pinRequired = false
-    root.airplayAudio = false
     root.discovering = false
     root.busy = true
     root.activeReceiver = receiver
-    root.activeTestPattern = root.testPattern
-    root.phase = receiver.protocol === "airplay" ? "connecting" : "starting"
+    root.phase = "connecting"
     root.send(Model.connectRequest(receiver, root.testPattern))
   }
 
@@ -134,7 +122,7 @@ QtObject {
       root.detail = "Envío de pantalla desactivado"
       if (backend.running) {
         root.shuttingDown = true
-        // Quit follows the engine's cooperative session and daemon cleanup.
+        // Quit follows the engine's cooperative session cleanup.
         backend.write(JSON.stringify({command: "quit"}) + "\n")
       }
     } else if (!root.shuttingDown) {
@@ -171,19 +159,10 @@ QtObject {
           root.selectedKey = root.receivers.length ? root.receivers[0].key : ""
       } else if (event.event === "diagnostics") {
         root.checks = Array.isArray(event.checks) ? event.checks.slice(0, 40) : []
-        root.prerequisitesReady = event.ready === true
-        root.airplayReady = event.airplay_ready === true
+        root.airplayReady = event.ready === true
       } else if (event.event === "pin_required") {
         root.pinRequired = true
         root.pinKind = String(event.kind || "pin")
-      } else if (event.event === "airplay") {
-        root.airplayAudio = event.audio === true
-        root.feedback = false
-        root.resolution = "AirPlay"
-      } else if (event.event === "metrics") {
-        root.kbps = Math.max(0, Math.min(8000, Number(event.kbps) || 0))
-        root.feedback = event.feedback === true
-        root.resolution = String(event.width) + "×" + String(event.height) + " · " + String(event.fps) + " fps"
       } else if (event.event === "warning") {
         root.warning = Model.plain(event.detail, 1200)
         root.appendHistory(root.warning)
@@ -234,7 +213,6 @@ QtObject {
       return JSON.stringify({phase: root.phase, detail: root.detail, busy: root.busy,
          enabled: root.enabled, discovering: root.discovering, receivers: root.receivers,
         selectedKey: root.selectedKey, pinRequired: root.pinRequired,
-        kbps: root.kbps, feedback: root.feedback,
         warning: root.warning, logPath: root.logPath})
     }
   }

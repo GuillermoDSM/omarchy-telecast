@@ -10,14 +10,6 @@ if [[ -e "$destination" || -L "$destination" ]]; then
 fi
 
 cargo build --manifest-path "$root/engine/Cargo.toml" --release --locked --jobs "${CARGO_BUILD_JOBS:-2}"
-airplay_bin="$root/engine/target/release/doubletake"
-if [[ ! -x "$airplay_bin" ]]; then
-  if command -v go >/dev/null 2>&1; then
-    bash "$root/tools/build_airplay.sh" "$airplay_bin"
-  else
-    printf 'Aviso: falta %s y Go no está instalado. El respaldo DoubleTake no estará disponible; AirPlay Rust sigue disponible.\n' "$airplay_bin" >&2
-  fi
-fi
 omarchy plugin validate "$root"
 
 # Stage outside the watched plugins directory, then publish with one rename.
@@ -38,12 +30,6 @@ install -d -m 755 -- "$stage/source/engine"
 cp -R -- "$root/engine/src" "$stage/source/engine/src"
 install -m 644 -- "$root/engine/Cargo.toml" "$root/engine/Cargo.lock" "$stage/source/engine/"
 install -D -m 755 -- "$root/engine/target/release/omarchy-miracast" "$stage/bin/omarchy-miracast"
-if [[ -x "$airplay_bin" ]]; then
-  install -D -m 755 -- "$airplay_bin" "$stage/bin/doubletake"
-fi
-for file in LICENSE COPYING.GPL omarchy.patch README.md; do
-  install -m 644 -- "$root/third_party/doubletake/$file" "$stage/licenses/DoubleTake-$file"
-done
 mv -T --no-clobber -- "$stage" "$destination"
 if [[ -d "$stage" ]]; then
   printf 'El destino apareció durante la instalación; no se ha sobrescrito: %s\n' "$destination" >&2

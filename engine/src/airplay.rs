@@ -80,7 +80,14 @@ pub async fn run(
     cancel: CancellationToken,
 ) {
     native_run(
-        manager, target, port, test, name, receiver_id, events, cancel,
+        manager,
+        target,
+        port,
+        test,
+        name,
+        receiver_id,
+        events,
+        cancel,
     )
     .await;
 }
@@ -203,7 +210,8 @@ async fn native_run(
     cancel: CancellationToken,
 ) {
     use crate::airplay_native::{
-        capture::Capture as NativeCapture, manager::Manager as NativeManager,
+        capture::Capture as NativeCapture,
+        manager::Manager as NativeManager,
         pairing::Credentials,
         sources::{Kind as SourceKind, VideoSources},
         worker,
@@ -286,9 +294,7 @@ async fn native_run(
                         .await
                         .context("Tiempo de selección agotado")??;
                     if let Some(name) = virtual_name.as_deref()
-                        && portal
-                            .mapping()
-                            .is_some_and(|selected| selected != name)
+                        && portal.mapping().is_some_and(|selected| selected != name)
                     {
                         events.trace("native", "mirror_existing_output");
                         initial_kind = SourceKind::Laptop;
@@ -360,7 +366,7 @@ async fn native_run(
                         .downcast_ref::<crate::airplay_native::session::MissingReceiverTimeline>()
                         .is_some() =>
                 {
-                    // DoubleTake's verified behaviour: some receivers (LG webOS 5,
+                    // Verified receiver behaviour: some receivers (LG webOS 5,
                     // Samsung) advertise PTP but name no timeline. Retry once on a
                     // fresh, re-verified connection over NTP.
                     events.trace("native", "ptp_timeline_missing_retry_ntp");
@@ -400,7 +406,16 @@ async fn native_run(
                     "AirPlay Rust activo · selecciona Omarchy-AirPlay-TV para audio en {name}"
                 ),
             );
-            worker::run(session, sources, audio, output, event_rx, cancel.clone(), events.clone()).await
+            worker::run(
+                session,
+                sources,
+                audio,
+                output,
+                event_rx,
+                cancel.clone(),
+                events.clone(),
+            )
+            .await
         };
         tokio::pin!(operation);
         tokio::select! {
@@ -429,8 +444,12 @@ async fn native_run(
     if let Some(portal) = resources.portal.take() {
         match timeout(Duration::from_secs(3), portal.close()).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => cleanup_error = Some(format!("No se pudo cerrar el portal: {error:#}")),
-            Err(_) => cleanup_error = Some("El cierre del portal excedió el tiempo límite".to_owned()),
+            Ok(Err(error)) => {
+                cleanup_error = Some(format!("No se pudo cerrar el portal: {error:#}"))
+            }
+            Err(_) => {
+                cleanup_error = Some("El cierre del portal excedió el tiempo límite".to_owned())
+            }
         }
     }
     if let Some(display) = resources.display.take()

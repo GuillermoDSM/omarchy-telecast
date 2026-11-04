@@ -827,13 +827,31 @@ mod tests {
             gst::init().unwrap();
             let decoder = gst::parse::launch("appsrc name=input format=time ! h264parse ! avdec_h264 ! appsink name=output sync=false")
                 .unwrap().downcast::<gst::Pipeline>().unwrap();
-            let input = decoder.by_name("input").unwrap().downcast::<gstreamer_app::AppSrc>().unwrap();
-            let output = decoder.by_name("output").unwrap().downcast::<gstreamer_app::AppSink>().unwrap();
-            input.set_caps(Some(&gst::Caps::builder("video/x-h264").field("stream-format", "avc").field("alignment", "au").field("codec_data", gst::Buffer::from_slice(payload)).build()));
+            let input = decoder
+                .by_name("input")
+                .unwrap()
+                .downcast::<gstreamer_app::AppSrc>()
+                .unwrap();
+            let output = decoder
+                .by_name("output")
+                .unwrap()
+                .downcast::<gstreamer_app::AppSink>()
+                .unwrap();
+            input.set_caps(Some(
+                &gst::Caps::builder("video/x-h264")
+                    .field("stream-format", "avc")
+                    .field("alignment", "au")
+                    .field("codec_data", gst::Buffer::from_slice(payload))
+                    .build(),
+            ));
             decoder.set_state(gst::State::Playing).unwrap();
-            input.push_buffer(gst::Buffer::from_slice(plaintext)).unwrap();
+            input
+                .push_buffer(gst::Buffer::from_slice(plaintext))
+                .unwrap();
             input.end_of_stream().unwrap();
-            let decoded = output.try_pull_sample(gst::ClockTime::from_seconds(5)).expect("transport video did not decode");
+            let decoded = output
+                .try_pull_sample(gst::ClockTime::from_seconds(5))
+                .expect("transport video did not decode");
             let info = decoded.caps().unwrap().structure(0).unwrap();
             assert_eq!(info.get::<i32>("width").unwrap(), 320);
             assert_eq!(info.get::<i32>("height").unwrap(), 240);
@@ -883,87 +901,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let capture = super::super::capture::Capture::video(crate::media::Source::Test, 320, 240, 10, 500).unwrap();
-        let sample = loop {
-            if let Some(sample) = capture.pull().unwrap() { break sample; }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
-        assert!(sample.keyframe);
-        let video = session.video.as_mut().unwrap();
-        video
-            .codec(sample.codec_data.as_ref().unwrap(), 320, 240, 0)
-            .await
-            .unwrap();
-        video
-            .frame(&sample.data, true, 0, 0)
-            .await
-            .unwrap();
-        session.send_pcm(&[0; 1408], 0).await.unwrap();
-        session.stop().await.unwrap();
-        task.await.unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "requires external DoubleTake test receiver binary"]
-    async fn doubletake_legacy_hap_ptp_session() {
-        use super::super::pairing::Pairer;
-        use tokio::{
-            io::{AsyncBufReadExt, BufReader},
-            process::Command,
-        };
-        let executable = std::env::var("AIRPLAY_TEST_RECEIVER").expect("set AIRPLAY_TEST_RECEIVER");
-        let mut child = Command::new(executable)
-            .args([
-                "-listen",
-                "127.0.0.1:0",
-                "-profile",
-                "lg",
-                "-auth",
-                "pin",
-                "-code",
-                "1234",
-                "-stats-interval",
-                "100ms",
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        tokio::time::timeout(Duration::from_secs(5), output.read_line(&mut line))
-            .await
-            .unwrap()
-            .unwrap();
-        let peer = line.split_whitespace().nth(5).unwrap().parse().unwrap();
-        let mut client = Client::connect(peer, Duration::from_secs(5)).await.unwrap();
-        let pairer = Pairer {
-            identifier: "12345678-1234-4234-8234-123456789abc".into(),
-            client_name: "Test Sender".into(),
-            pairing_type: 3,
-        };
-        pairer.start_pin(&mut client).await.unwrap();
-        let creds = pairer.pair_pin(&mut client, "1234").await.unwrap();
-        let shared = pairer.verify(&mut client, &creds).await.unwrap();
-        let config = Config {
-            peer,
-            session_uuid: "8bf3a005-01da-4940-af31-d290ea098111".into(),
-            device_id: "02:00:00:00:00:01".into(),
-            name: "Test Sender".into(),
-            audio_latency_samples: 11025,
-            video_latency_ms: 250,
-            stream_connections: false,
-            audio_aad: AudioAad::TimestampSsrc,
-            receiver_features: 0x038bcb46007f8ad0,
-            timing: TimingMode::Ptp,
-        };
-        let (events, _rx) = mpsc::channel(8);
-        let mut session = Session::start(client, config, shared, None, events)
-            .await
-            .unwrap();
-        let (timestamp, timeline) = session.network_time(std::time::Instant::now()).unwrap();
-        assert_ne!(timeline, 0);
         let capture =
             super::super::capture::Capture::video(crate::media::Source::Test, 320, 240, 10, 500)
                 .unwrap();
@@ -973,40 +910,15 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
+        assert!(sample.keyframe);
         let video = session.video.as_mut().unwrap();
         video
-            .codec(&sample.codec_data.unwrap(), 320, 240, timestamp)
+            .codec(sample.codec_data.as_ref().unwrap(), 320, 240, 0)
             .await
             .unwrap();
-        video
-            .frame(&sample.data, sample.keyframe, timestamp, timeline)
-            .await
-            .unwrap();
-        session
-            .audio
-            .sync(timestamp, Some(timeline), 0, 11025, true)
-            .await
-            .unwrap();
+        video.frame(&sample.data, true, 0, 0).await.unwrap();
         session.send_pcm(&[0; 1408], 0).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                line.clear();
-                output.read_line(&mut line).await.unwrap();
-                let count = |key: &str| {
-                    line.split_whitespace()
-                        .find_map(|part| part.strip_prefix(key))
-                        .and_then(|value| value.split('/').next())
-                        .and_then(|value| value.parse::<u32>().ok())
-                        .unwrap_or(0)
-                };
-                if count("video=") >= 2 && count("audio=") >= 2 {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("receiver did not observe both media streams");
         session.stop().await.unwrap();
-        child.kill().await.unwrap();
+        task.await.unwrap();
     }
 }

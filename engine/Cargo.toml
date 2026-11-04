@@ -3,7 +3,7 @@ name = "omarchy-miracast"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
-description = "Experimental AirPlay and Wi-Fi Display sender for the Omarchy shell"
+description = "Experimental AirPlay sender for the Omarchy shell"
 
 [dependencies]
 anyhow = "1"
@@ -22,7 +22,6 @@ zeroize = { version = "1", features = ["derive"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
 gstreamer = { version = "0.25", features = ["v1_24"] }
 gstreamer-app = { version = "0.25", features = ["v1_24"] }
-gstreamer-video = { version = "0.25", features = ["v1_24"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

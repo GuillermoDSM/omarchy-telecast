@@ -140,7 +140,7 @@ mod tests {
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = server.local_addr().unwrap();
         let cancel = CancellationToken::new();
-        let task = tokio::spawn(async move {
+        let _task = tokio::spawn(async move {
             let _ = serve_timing(&server, address, cancel).await;
         });
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -150,10 +150,11 @@ mod tests {
         request[24..].copy_from_slice(&42u64.to_be_bytes());
         client.send_to(&request, address).await.unwrap();
         let mut reply = [0u8; 32];
-        let (length, _) = tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut reply))
-            .await
-            .unwrap()
-            .unwrap();
+        let (length, _) =
+            tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(length, 32);
         assert_eq!(&reply[..2], &[0x80, 0xd3]);
         assert_eq!(&reply[8..16], &42u64.to_be_bytes());

@@ -7,7 +7,6 @@ use ashpd::desktop::{
 };
 use zbus::Connection;
 
-
 pub struct Capture {
     connection: Connection,
     portal: Screencast,

@@ -31,62 +31,6 @@ pub struct Manager {
     pub state: State,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    #[ignore = "requires external DoubleTake test receiver binary"]
-    async fn doubletake_lg_manager_pin_and_session() {
-        use tokio::{
-            io::{AsyncBufReadExt, BufReader},
-            process::Command,
-        };
-        let path = std::env::var("AIRPLAY_TEST_RECEIVER").expect("set AIRPLAY_TEST_RECEIVER");
-        let mut child = Command::new(path)
-            .args([
-                "-listen",
-                "127.0.0.1:0",
-                "-profile",
-                "lg",
-                "-auth",
-                "pin",
-                "-code",
-                "1234",
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut reader = BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        reader.read_line(&mut line).await.unwrap();
-        let peer = line.split_whitespace().nth(5).unwrap().parse().unwrap();
-        let mut manager = Manager::connect(
-            peer,
-            "12345678-1234-4234-8234-123456789abc".into(),
-            "Test Sender".into(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(manager.features, 0x038bcb46007f8ad0);
-        assert_ne!(manager.status_flags & (1 << 9), 0);
-        manager.request_pin().await.unwrap();
-        let _credentials = manager.submit_pin("1234").await.unwrap();
-        let (tx, _rx) = mpsc::channel(8);
-        let session = manager
-            .start(
-                "8bf3a005-01da-4940-af31-d290ea098111".into(),
-                "02:00:00:00:00:01".into(),
-                tx,
-            )
-            .await
-            .unwrap();
-        session.stop().await.unwrap();
-        child.kill().await.unwrap();
-    }
-}
-
 impl Manager {
     pub async fn discover(window: Duration) -> Result<Vec<Device>> {
         discovery::discover(window).await

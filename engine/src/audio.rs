@@ -165,7 +165,11 @@ impl TvOutput {
     pub fn node_name(&self) -> &str {
         &self.name
     }
-    /// Pulse compatibility name, only for explicitly opted-in DoubleTake.
+    #[cfg(test)]
+    pub fn node_id(&self) -> u32 {
+        self.node
+    }
+    /// PulseAudio compatibility name for the session TV sink.
     pub fn monitor(&self) -> String {
         format!("{}.monitor", self.name)
     }

@@ -529,7 +529,9 @@ mod tests {
     #[test]
     fn command_arguments_are_strict() {
         assert!(matches!(
-            serde_json::from_str::<Request>(r#"{"command":"connect","ip":"192.168.1.2","port":7000}"#),
+            serde_json::from_str::<Request>(
+                r#"{"command":"connect","ip":"192.168.1.2","port":7000}"#
+            ),
             Ok(Request::Connect { .. })
         ));
         assert!(

@@ -66,8 +66,14 @@ impl VideoSources {
     }
     pub fn capture_mut(&mut self) -> &mut VideoCapture {
         match self.active {
-            Kind::Virtual => self.virtual_capture.as_mut().expect("virtual capture missing"),
-            Kind::Laptop => self.laptop_capture.as_mut().expect("laptop capture missing"),
+            Kind::Virtual => self
+                .virtual_capture
+                .as_mut()
+                .expect("virtual capture missing"),
+            Kind::Laptop => self
+                .laptop_capture
+                .as_mut()
+                .expect("laptop capture missing"),
         }
     }
     /// Rebuild the virtual pipeline after a mirror cycle and select it again.
@@ -107,13 +113,8 @@ impl VideoSources {
                 .await
                 .context("No se autorizó la pantalla de la laptop")?;
             let source = portal.source()?;
-            let capture = VideoCapture::video(
-                source,
-                1920,
-                1080,
-                30,
-                super::capture::DEFAULT_BITRATE_KBPS,
-            )?;
+            let capture =
+                VideoCapture::video(source, 1920, 1080, 30, super::capture::DEFAULT_BITRATE_KBPS)?;
             // Use the same bounded startup wait as the initial source.
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             while capture.pull()?.is_none() {
