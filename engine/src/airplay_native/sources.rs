@@ -107,7 +107,13 @@ impl VideoSources {
                 .await
                 .context("No se autorizó la pantalla de la laptop")?;
             let source = portal.source()?;
-            let capture = VideoCapture::video(source, 1920, 1080, 30, 4000)?;
+            let capture = VideoCapture::video(
+                source,
+                1920,
+                1080,
+                30,
+                super::capture::DEFAULT_BITRATE_KBPS,
+            )?;
             // Use the same bounded startup wait as the initial source.
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             while capture.pull()?.is_none() {

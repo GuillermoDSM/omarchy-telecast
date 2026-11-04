@@ -5,6 +5,11 @@ use anyhow::{Context, Result, ensure};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
 
+/// 1080p30 screen/video needs more than DoubleTake's conservative 4.1 Mb/s.
+/// The link is only a few Mb/s away from idle on Wi-Fi 6, so 8 Mb/s removes
+/// fast-motion macroblocking without adding meaningful network latency.
+pub const DEFAULT_BITRATE_KBPS: u32 = 8000;
+
 pub struct Sample {
     pub data: Vec<u8>,
     pub pts: Option<gst::ClockTime>,
@@ -90,7 +95,7 @@ impl Capture {
             Source::Test => "videotestsrc name=capture is-live=true pattern=ball".to_owned(),
         };
         let pipeline = format!(
-            "{input} ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! videoscale add-borders=true ! videorate drop-only=true ! video/x-raw,format=I420,width={width},height={height},framerate={fps}/1 ! x264enc tune=zerolatency speed-preset=veryfast bitrate={bitrate_kbps} key-int-max={fps} bframes=0 ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au ! appsink name=samples sync=false max-buffers=3 drop=true"
+            "{input} ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! videoscale add-borders=true ! videorate drop-only=true ! video/x-raw,format=I420,width={width},height={height},framerate={fps}/1 ! x264enc name=video_encoder tune=zerolatency speed-preset=veryfast bitrate={bitrate_kbps} key-int-max={fps} bframes=0 ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au ! appsink name=samples sync=false max-buffers=2 drop=false"
         );
         Self::start(&pipeline, None)
     }
@@ -105,6 +110,16 @@ impl Capture {
             Some(monitor),
         )
     }
+    /// Change the live encoder bitrate without restarting the pipeline.
+    pub fn set_bitrate(&self, kbps: u32) -> Result<()> {
+        let encoder = self
+            .pipeline
+            .by_name("video_encoder")
+            .context("capture missing video encoder")?;
+        encoder.set_property("bitrate", kbps);
+        Ok(())
+    }
+
     /// Restart after the compositor reconfigures the captured output. The
     /// portal FD and node are reused; a destroyed stream keeps failing and the
     /// caller decides how long to wait without ending the AirPlay session.

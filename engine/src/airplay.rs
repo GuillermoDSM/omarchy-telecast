@@ -798,7 +798,13 @@ async fn native_run(
             if resources.previous_sink.is_some() {
                 events.trace("native", "audio_routed_to_tv");
             }
-            let video = NativeCapture::video(video_source, 1920, 1080, 30, 4000)?;
+            let video = NativeCapture::video(
+                video_source,
+                1920,
+                1080,
+                30,
+                crate::airplay_native::capture::DEFAULT_BITRATE_KBPS,
+            )?;
             let audio = NativeCapture::audio(&output.monitor())?;
             events.trace("native", "capture_pipelines_started");
             timeout(Duration::from_secs(10), async {

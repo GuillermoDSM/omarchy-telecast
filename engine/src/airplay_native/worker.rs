@@ -43,6 +43,8 @@ pub async fn run(
     let mut capture_age_max = 0u64;
     let mut send_blocked_max = 0u64;
     let mut late_frames = 0u64;
+    let mut bitrate_kbps = crate::airplay_native::capture::DEFAULT_BITRATE_KBPS;
+    let mut clean_intervals = 0u32;
     let audio_start = Instant::now();
     let mut layout = crate::display::layout_signature().await.ok();
     let result: Result<()> = async {
@@ -199,13 +201,44 @@ pub async fn run(
                             capture_interrupted = Some(Instant::now());
                         }
                     }
+                    // Keep 8 Mb/s when the link is healthy. Back off only on
+                    // real sender congestion, then recover gradually. Lowering
+                    // quality preemptively would trade image quality for no
+                    // benefit on a clean Wi-Fi link.
+                    if send_blocked_max >= 20 || late_frames > 0 {
+                        clean_intervals = 0;
+                        let next = (bitrate_kbps * 3 / 4).max(3000);
+                        if next < bitrate_kbps
+                            && sources.capture_mut().set_bitrate(next).is_ok()
+                        {
+                            bitrate_kbps = next;
+                            events.trace("native_media", "bitrate_backoff");
+                        }
+                    } else if send_blocked_max <= 2 && capture_age_max <= 50 {
+                        clean_intervals += 1;
+                        if clean_intervals >= 10 {
+                            clean_intervals = 0;
+                            let next = (bitrate_kbps + 500).min(
+                                crate::airplay_native::capture::DEFAULT_BITRATE_KBPS,
+                            );
+                            if next > bitrate_kbps
+                                && sources.capture_mut().set_bitrate(next).is_ok()
+                            {
+                                bitrate_kbps = next;
+                                events.trace("native_media", "bitrate_recover");
+                            }
+                        }
+                    } else {
+                        clean_intervals = 0;
+                    }
                     events.send(serde_json::json!({
                         "event":"trace","stage":"native_media","detail":"counters",
                         "video_frames":frames_sent,
                         "codec_config_sent":codec.is_some(),
                         "capture_age_max_ms":capture_age_max,
                         "send_blocked_max_ms":send_blocked_max,
-                        "late_frames":late_frames
+                        "late_frames":late_frames,
+                        "bitrate_kbps":bitrate_kbps
                     }));
                     capture_age_max = 0;
                     send_blocked_max = 0;
