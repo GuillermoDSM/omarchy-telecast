@@ -2,360 +2,87 @@ use crate::{Events, audio, display::VirtualDisplay};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::UnixStream,
-    process::{Child, Command},
+    process::Command,
     sync::Mutex,
-    time::{Instant, sleep, timeout},
+    time::{sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
-
-const SOCKET_WAIT: Duration = Duration::from_secs(8);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
-const SCAN_WAIT: Duration = Duration::from_secs(12);
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-#[derive(Debug, PartialEq, Eq)]
-enum Backend {
-    DoubleTake,
-    Native,
-    Invalid,
-}
-
-fn backend(value: Option<&str>) -> Backend {
-    match value {
-        Some("doubletake") => Backend::DoubleTake,
-        None | Some("native") | Some("rust") => Backend::Native,
-        _ => Backend::Invalid,
-    }
-}
-
-fn selected_backend() -> Backend {
-    backend(std::env::var("OMARCHY_AIRPLAY_BACKEND").ok().as_deref())
-}
-
-fn ensure_doubletake() -> Result<()> {
-    match selected_backend() {
-        Backend::DoubleTake => Ok(()),
-        Backend::Native => bail!("DoubleTake no está seleccionado; usa OMARCHY_AIRPLAY_BACKEND=doubletake"),
-        Backend::Invalid => bail!("OMARCHY_AIRPLAY_BACKEND debe ser doubletake o native"),
-    }
-}
-
-fn experimental_audio(value: Option<&str>) -> bool {
-    value == Some("1")
-}
 
 fn ensure_native_features(features: u64) -> Result<()> {
     if features & (1 << 14) != 0 {
         bail!(
-            "Este receptor requiere FairPlay FPSAP, aún no disponible en Rust. Para usar DoubleTake reinicia con OMARCHY_AIRPLAY_BACKEND=doubletake"
+            "El receptor anuncia FairPlay SAP (FPSAP), que el motor AirPlay nativo todavía no implementa"
         );
     }
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayMode {
-    Extended,
-    Mirror,
-}
-
-fn display_mode(value: Option<&str>) -> Result<DisplayMode> {
-    match value {
-        None | Some("extended") => Ok(DisplayMode::Extended),
-        Some("mirror") => Ok(DisplayMode::Mirror),
-        _ => bail!("OMARCHY_AIRPLAY_DISPLAY debe ser extended o mirror"),
-    }
-}
-
-fn selected_display_mode() -> Result<DisplayMode> {
-    display_mode(std::env::var("OMARCHY_AIRPLAY_DISPLAY").ok().as_deref())
-}
-
-struct Running {
-    child: Child,
-    test: bool,
-    audio_source: Option<String>,
-    display_mode: DisplayMode,
-}
-
-/// Owns the DoubleTake daemon used for AirPlay mirroring. The daemon is kept
-/// alive between scans so the mDNS cache and pairing state survive popup
-/// reopens; it is stopped when the engine exits.
+/// Owns only the PIN handoff between the media task and the IPC command loop.
 pub struct Manager {
-    socket: PathBuf,
-    creds: PathBuf,
-    log: PathBuf,
-    running: Mutex<Option<Running>>,
     native_pin: Mutex<Option<tokio::sync::mpsc::Sender<String>>>,
 }
 
 impl Manager {
     pub fn new() -> Result<Self> {
-        let runtime = runtime_dir()?;
-        let state = state_dir()?;
-        std::fs::create_dir_all(&runtime)
-            .with_context(|| format!("No se pudo crear {}", runtime.display()))?;
-        std::fs::create_dir_all(&state)
-            .with_context(|| format!("No se pudo crear {}", state.display()))?;
-        set_dir_mode(&runtime)?;
-        set_dir_mode(&state)?;
         Ok(Self {
-            // A daemon left behind by an earlier worker must never be mistaken
-            // for this session's output-guarded process.
-            socket: runtime.join(format!("airplay-{}.sock", std::process::id())),
-            creds: state.join("airplay-credentials.json"),
-            log: state.join("airplay.log"),
-            running: Mutex::new(None),
             native_pin: Mutex::new(None),
         })
     }
 
-    pub async fn warm(&self) {
-        if selected_backend() != Backend::DoubleTake {
-            return;
-        }
-        if let Ok(mode) = selected_display_mode() {
-            let _ = self.ensure(false, None, mode).await;
-        }
-    }
-
-    pub async fn is_streaming(&self) -> bool {
-        if !self.socket.exists() {
-            return false;
-        }
-        self.status()
-            .await
-            .is_ok_and(|status| status["state"] == "streaming")
-    }
-
     pub async fn devices(&self) -> Result<Vec<Value>> {
-        if selected_backend() == Backend::Native {
-            let devices =
-                crate::airplay_native::manager::Manager::discover(Duration::from_millis(1200))
-                    .await?;
-            return Ok(devices.into_iter().filter_map(|device| {
+        let devices =
+            crate::airplay_native::manager::Manager::discover(Duration::from_millis(1200)).await?;
+        Ok(devices
+            .into_iter()
+            .filter_map(|device| {
                 let address = device.addresses.into_iter().next()?;
                 let ip = address.ip().to_string();
                 let id = device.device_id.unwrap_or_else(|| ip.clone());
-                Some(json!({"protocol":"airplay","mac":clean(&id,64),"name":clean(&device.name,120),"model":clean(device.model.as_deref().unwrap_or(""),120),"strength":0,"wfd":false,"ip":ip,"port":address.port()}))
-            }).collect());
-        }
-        ensure_doubletake()?;
-        if self.status().await.is_err() {
-            self.ensure(false, None, selected_display_mode()?).await?;
-        }
-        let response = self
-            .request(json!({"cmd":"devices"}), REQUEST_TIMEOUT)
-            .await?;
-        Ok(map_devices(&response))
-    }
-
-    pub async fn scan(&self) -> Result<Vec<Value>> {
-        let deadline = Instant::now() + SCAN_WAIT;
-        let mut devices;
-        loop {
-            devices = self.devices().await?;
-            if !devices.is_empty() || Instant::now() >= deadline {
-                break;
-            }
-            sleep(Duration::from_millis(250)).await;
-        }
-        Ok(devices)
+                Some(json!({
+                    "protocol":"airplay",
+                    "mac":clean(&id,64),
+                    "name":clean(&device.name,120),
+                    "model":clean(device.model.as_deref().unwrap_or(""),120),
+                    "strength":0,
+                    "ip":ip,
+                    "port":address.port()
+                }))
+            })
+            .collect())
     }
 
     pub async fn pin(&self, pin: &str) -> Result<()> {
-        if selected_backend() == Backend::Native {
-            let sender = self
-                .native_pin
-                .lock()
-                .await
-                .clone()
-                .context("No hay una solicitud de PIN activa")?;
-            return sender
-                .try_send(pin.to_owned())
-                .context("No se pudo entregar el PIN");
-        }
-        let response = self
-            .request(json!({"cmd":"connect","pin":pin}), REQUEST_TIMEOUT)
-            .await?;
-        check(response).map(|_| ())
-    }
-
-    async fn status(&self) -> Result<Value> {
-        self.request(json!({"cmd":"status"}), REQUEST_TIMEOUT).await
-    }
-
-    async fn connect(&self, target: &str, port: u16) -> Result<Value> {
-        let response = self
-            .request(
-                json!({"cmd":"connect","target":target,"port":port}),
-                REQUEST_TIMEOUT,
-            )
-            .await?;
-        check(response)
-    }
-
-    async fn disconnect(&self) -> Result<()> {
-        self.request(json!({"cmd":"disconnect"}), REQUEST_TIMEOUT)
+        let sender = self
+            .native_pin
+            .lock()
             .await
-            .map(|_| ())
-    }
-
-    async fn ensure(
-        &self,
-        test: bool,
-        audio_source: Option<&str>,
-        display_mode: DisplayMode,
-    ) -> Result<()> {
-        ensure_doubletake()?;
-        let mut guard = self.running.lock().await;
-        if let Some(running) = guard.as_mut() {
-            if running.test == test
-                && running.audio_source.as_deref() == audio_source
-                && running.display_mode == display_mode
-                && running.child.try_wait()?.is_none()
-            {
-                if self
-                    .request(json!({"cmd":"status"}), Duration::from_secs(1))
-                    .await
-                    .is_ok()
-                {
-                    return Ok(());
-                }
-            }
-            stop_child(&mut running.child).await;
-            *guard = None;
-        }
-
-        let binary = binary_path()?;
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&self.log)
-            .with_context(|| format!("No se pudo abrir {}", self.log.display()))?;
-        let mut command = Command::new(&binary);
-        command
-            .arg("-daemonize")
-            .arg("-socket")
-            .arg(&self.socket)
-            .arg("-creds")
-            .arg(&self.creds)
-            .arg("-preserve-receiver-volume")
-            .arg("-omarchy-output-guard")
-            .arg("-fps")
-            .arg("30")
-            .arg("-bitrate")
-            .arg("0")
-            .arg("-hwaccel")
-            .arg("auto")
-            .arg("-video-codec")
-            .arg("auto")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(log))
-            .kill_on_drop(true);
-        command.env("OMARCHY_AIRPLAY_PORTAL_FRESH", "1");
-        match display_mode {
-            DisplayMode::Extended => {
-                command.env("OMARCHY_AIRPLAY_OUTPUT", VirtualDisplay::session_name());
-            }
-            DisplayMode::Mirror => {
-                command.env_remove("OMARCHY_AIRPLAY_OUTPUT");
-            }
-        }
-        if std::env::var_os("OMARCHY_MIRACAST_AIRPLAY_DEBUG").is_some() {
-            command.arg("-debug");
-        }
-        if test {
-            command.arg("-test");
-        }
-        if let Some(source) = audio_source {
-            command.arg("-audio-source").arg(source);
-        }
-        let child = command
-            .spawn()
-            .with_context(|| format!("No se pudo iniciar {}", binary.display()))?;
-        *guard = Some(Running {
-            child,
-            test,
-            audio_source: audio_source.map(str::to_owned),
-            display_mode,
-        });
-
-        let deadline = Instant::now() + SOCKET_WAIT;
-        loop {
-            match self.status().await {
-                Ok(_) => return Ok(()),
-                Err(error) if Instant::now() < deadline => {
-                    let _ = error;
-                    sleep(Duration::from_millis(150)).await;
-                }
-                Err(error) => {
-                    if let Some(mut running) = guard.take() {
-                        stop_child(&mut running.child).await;
-                    }
-                    bail!(
-                        "El emisor AirPlay no respondió en {}: {error:#}. Registro: {}",
-                        SOCKET_WAIT.as_secs(),
-                        self.log.display()
-                    );
-                }
-            }
-        }
-    }
-
-    async fn request(&self, request: Value, wait: Duration) -> Result<Value> {
-        let mut stream = UnixStream::connect(&self.socket).await.with_context(|| {
-            format!(
-                "No se pudo conectar al emisor AirPlay en {}",
-                self.socket.display()
-            )
-        })?;
-        let mut body = serde_json::to_vec(&request)?;
-        body.push(b'\n');
-        stream.write_all(&body).await?;
-        stream.flush().await?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        let read = timeout(wait, reader.read_line(&mut line))
-            .await
-            .context("El emisor AirPlay no respondió a tiempo")??;
-        if read == 0 {
-            bail!("El emisor AirPlay cerró la conexión sin responder");
-        }
-        if line.len() > 64 * 1024 {
-            bail!("Respuesta demasiado grande del emisor AirPlay");
-        }
-        Ok(serde_json::from_str(&line).context("Respuesta inválida del emisor AirPlay")?)
-    }
-
-    pub async fn shutdown(&self) {
-        let _ = self.disconnect().await;
-        let mut guard = self.running.lock().await;
-        if let Some(mut running) = guard.take() {
-            stop_child(&mut running.child).await;
-        }
+            .clone()
+            .context("No hay una solicitud de PIN activa")?;
+        sender
+            .try_send(pin.to_owned())
+            .context("No se pudo entregar el PIN")
     }
 }
 
-impl Drop for Manager {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.running.try_lock()
-            && let Some(running) = guard.as_mut()
-        {
-            let _ = running.child.start_kill();
-        }
-    }
+pub async fn run(
+    manager: std::sync::Arc<Manager>,
+    target: String,
+    port: u16,
+    test: bool,
+    name: String,
+    receiver_id: String,
+    events: Events,
+    cancel: CancellationToken,
+) {
+    native_run(
+        manager, target, port, test, name, receiver_id, events, cancel,
+    )
+    .await;
 }
 
 async fn check_route(target: &str) -> Result<()> {
@@ -382,215 +109,6 @@ fn route_uses_tailscale(output: &str) -> bool {
     output
         .split_whitespace()
         .any(|word| word == "tailscale0" || word.starts_with("tailscale"))
-}
-
-fn check(response: Value) -> Result<Value> {
-    if response["ok"].as_bool().unwrap_or(false) {
-        Ok(response)
-    } else {
-        bail!(
-            "{}",
-            response["error"]
-                .as_str()
-                .filter(|error| !error.is_empty())
-                .unwrap_or("el emisor AirPlay rechazó la operación")
-        )
-    }
-}
-
-fn map_devices(response: &Value) -> Vec<Value> {
-    let Some(devices) = response["devices"].as_array() else {
-        return Vec::new();
-    };
-    devices
-        .iter()
-        .filter_map(|device| {
-            let ip = clean(device["ip"].as_str().unwrap_or_default(), 64);
-            let port = device["port"].as_u64().unwrap_or(0);
-            let id = clean(device["device_id"].as_str().unwrap_or_default(), 64);
-            if ip.is_empty() || port == 0 || port > u16::MAX as u64 {
-                return None;
-            }
-            let name = clean(device["name"].as_str().unwrap_or_default(), 120);
-            let model = clean(device["model"].as_str().unwrap_or_default(), 120);
-            let mac = if id.is_empty() {
-                ip.clone()
-            } else {
-                id.to_ascii_uppercase()
-            };
-            Some(json!({
-                "protocol": "airplay",
-                "mac": mac,
-                "name": if name.is_empty() { ip.clone() } else { name },
-                "model": model,
-                "strength": 0,
-                "wfd": false,
-                "ip": ip,
-                "port": port,
-            }))
-        })
-        .collect()
-}
-
-pub async fn run(
-    manager: std::sync::Arc<Manager>,
-    target: String,
-    port: u16,
-    test: bool,
-    name: String,
-    receiver_id: String,
-    display_mode: Option<DisplayMode>,
-    events: Events,
-    cancel: CancellationToken,
-) {
-    if selected_backend() == Backend::Native {
-        native_run(
-            manager,
-            target,
-            port,
-            test,
-            name,
-            receiver_id,
-            display_mode,
-            events,
-            cancel,
-        )
-        .await;
-        return;
-    }
-    let name = clean(&name, 120);
-    let mut last_state = String::new();
-    let mut audio_warned = false;
-    let mut display = None;
-    let mut tv_audio = None;
-    let result = async {
-        check_route(&target).await?;
-        ensure_doubletake()?;
-        let mode = match display_mode { Some(mode) => mode, None => selected_display_mode()? };
-        if !test {
-            if mode == DisplayMode::Extended {
-                events.state("display", "Creando pantalla extendida para AirPlay");
-                display = Some(VirtualDisplay::create().await?);
-            }
-            if let Some(display) = display.as_ref() {
-                events.state("capture", &format!("Selecciona {} en el diálogo de compartir pantalla", display.name));
-            } else {
-                events.state("capture", "Selecciona la pantalla que deseas duplicar en el portal");
-            }
-        }
-        if !test && experimental_audio(std::env::var("OMARCHY_AIRPLAY_EXPERIMENTAL_TV_SINK").ok().as_deref()) {
-            anyhow::ensure!(gstreamer::ElementFactory::find("pulsesrc").is_some(), "Falta pulsesrc; no se capturará una fuente de audio alternativa");
-            tv_audio = Some(audio::TvOutput::create().await.context("No se pudo crear la salida experimental para la TV")?);
-            tv_audio.as_ref().unwrap().wait_pulse_monitor().await?;
-            events.warning("Selecciona Omarchy-AirPlay-TV para enviar audio a la TV; esta ruta es experimental.");
-        }
-        let source = tv_audio.as_ref().map(|output| output.monitor());
-        manager.ensure(test, source.as_deref(), mode).await?;
-        events.state(
-            "connecting",
-            &if test {
-                format!("Conectando con {name} por AirPlay; acepta la solicitud en la TV")
-            } else if display.is_some() {
-                format!("Conectando con {name}; selecciona {} en el portal", VirtualDisplay::session_name())
-            } else {
-                format!("Conectando con {name}; selecciona la pantalla que deseas duplicar")
-            },
-        );
-        manager.connect(&target, port).await?;
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-            if let Some(output) = tv_audio.as_ref() { output.check_pulse_monitor().await?; }
-            let status = manager.status().await?;
-            let state = status["state"].as_str().unwrap_or("idle");
-            if state != last_state {
-                match state {
-                    "pin_required" => {
-                        let kind = status["credential_kind"].as_str().unwrap_or("pin");
-                        events.send(json!({
-                            "event": "pin_required",
-                            "kind": kind,
-                            "device": name.clone(),
-                        }));
-                        events.state(
-                            "pairing",
-                            &format!(
-                                "Introduce {} que muestra {name}",
-                                if kind == "password" { "la contraseña" } else { "el PIN" }
-                            ),
-                        );
-                    }
-                    "streaming" => {
-                        let has_audio = status["has_audio"].as_bool().unwrap_or(false);
-                        events.send(json!({
-                            "event": "airplay",
-                            "device": name.clone(),
-                            "audio": has_audio,
-                        }));
-                        let detail = if has_audio && tv_audio.is_some() {
-                            format!("AirPlay activo · selecciona Omarchy-AirPlay-TV para enviar audio a {name}")
-                        } else if has_audio {
-                            format!(
-                                "AirPlay activo · audio y vídeo en {name}; el audio también suena en la laptop"
-                            )
-                        } else {
-                            format!("AirPlay activo · vídeo sin audio en {name}")
-                        };
-                        events.state("streaming", &detail);
-                        if !has_audio && !audio_warned {
-                            audio_warned = true;
-                            events.warning(
-                                "La TV no negoció audio; la sesión AirPlay continuará solo con vídeo",
-                            );
-                        }
-                    }
-                    "idle" => {
-                        events.state("idle", "Sesión AirPlay terminada");
-                        break;
-                    }
-                    other => {
-                        let error = status["error"].as_str().unwrap_or_default();
-                        let detail = if error.is_empty() {
-                            format!("AirPlay: {other}")
-                        } else {
-                            error.to_string()
-                        };
-                        events.state("connecting", &detail);
-                    }
-                }
-                last_state = state.to_string();
-            }
-            if state == "idle" {
-                break;
-            }
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = sleep(POLL_INTERVAL) => {}
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    let _ = manager.disconnect().await;
-    // Stop capture before unloading its monitor source.
-    if tv_audio.is_some() {
-        manager.shutdown().await;
-    }
-    if let Some(mut output) = tv_audio {
-        output.remove().await;
-    }
-    if let Some(display) = display
-        && let Err(error) = display.remove().await
-    {
-        events.state("error", &format!("No se pudo retirar la salida virtual; no se reconectará: {error:#}"));
-        return;
-    }
-    match result {
-        Ok(()) => events.state("idle", "Sesión AirPlay terminada"),
-        Err(error) => events.state("error", &format!("{error:#}")),
-    }
 }
 
 #[derive(Default)]
@@ -681,7 +199,6 @@ async fn native_run(
     test: bool,
     name: String,
     receiver_id: String,
-    display_mode: Option<DisplayMode>,
     events: Events,
     cancel: CancellationToken,
 ) {
@@ -696,12 +213,6 @@ async fn native_run(
     let result = {
         let operation = async {
             check_route(&target).await?;
-            // Native mode comes from the portal selection; still validate any
-            // inherited environment override for the fallback backend.
-            let _mode = match display_mode {
-                Some(mode) => mode,
-                None => selected_display_mode()?,
-            };
             let key = native_key()?;
             let credential_path = native_credential_path(&receiver_id)?;
             let mut credentials = match Credentials::load(&credential_path, &key) {
@@ -944,99 +455,6 @@ async fn native_run(
     }
 }
 
-pub async fn doctor() -> Vec<Value> {
-    let mut checks = Vec::new();
-    if selected_backend() == Backend::Native {
-        for (name, ok, detail) in [
-            (
-                "Vídeo AirPlay Rust",
-                ["x264enc", "h264parse", "pipewiresrc"]
-                    .iter()
-                    .all(|s| gstreamer::ElementFactory::find(s).is_some()),
-                "x264enc, h264parse y pipewiresrc",
-            ),
-            (
-                "Audio AirPlay Rust",
-                audio::native_available().await
-                    && ["pulsesrc", "audioconvert", "audioresample"]
-                        .iter()
-                        .all(|s| gstreamer::ElementFactory::find(s).is_some()),
-                "pw-cli, pw-dump, pipewire-pulse y GStreamer PulseAudio",
-            ),
-        ] {
-            checks.push(json!({"name":name,"ok":ok,"detail":detail,"group":"airplay"}));
-        }
-        return checks;
-    }
-    if let Err(error) = ensure_doubletake() {
-        checks.push(json!({"name":"Backend AirPlay", "ok":false, "detail":format!("{error:#}"), "group":"airplay"}));
-        return checks;
-    }
-    match binary_path() {
-        Ok(path) => checks.push(json!({
-            "name": "Emisor AirPlay (DoubleTake)",
-            "ok": true,
-            "detail": path.display().to_string(),
-            "group": "airplay",
-        })),
-        Err(error) => checks.push(json!({
-            "name": "Emisor AirPlay (DoubleTake)",
-            "ok": false,
-            "detail": format!("{error:#}"),
-            "group": "airplay",
-        })),
-    }
-    let openh264 = gstreamer::ElementFactory::find("openh264enc").is_some();
-    checks.push(json!({
-        "name": "Codificador AirPlay H.264",
-        "ok": openh264,
-        "detail": if openh264 { "openh264enc disponible" } else { "Falta openh264enc (gst-plugins-bad)" },
-        "group": "airplay",
-    }));
-    let pactl = audio::available().await;
-    checks.push(json!({
-        "name": "Audio AirPlay",
-        "ok": pactl,
-        "detail": if pactl { "pactl disponible; se captura la salida predeterminada por defecto" } else { "Falta pactl (libpulse)" },
-        "group": "airplay",
-    }));
-    checks
-}
-
-pub fn binary_path() -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("OMARCHY_AIRPLAY_BIN") {
-        let path = PathBuf::from(value);
-        if path.is_file() {
-            return Ok(path);
-        }
-        bail!(
-            "OMARCHY_AIRPLAY_BIN apunta a un archivo inexistente: {}",
-            path.display()
-        );
-    }
-    let executable = std::env::current_exe().context("No se pudo localizar el motor")?;
-    if let Some(directory) = executable.parent() {
-        let candidate = directory.join("doubletake");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    for candidate in ["/usr/bin/doubletake", "/usr/local/bin/doubletake"] {
-        let path = PathBuf::from(candidate);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-    bail!("No se encontró el emisor AirPlay. Instala DoubleTake o define OMARCHY_AIRPLAY_BIN")
-}
-
-fn runtime_dir() -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return Ok(PathBuf::from(value).join("omarchy-miracast"));
-    }
-    Ok(std::env::temp_dir().join(format!("omarchy-miracast-{}", unsafe { libc::getuid() })))
-}
-
 fn state_dir() -> Result<PathBuf> {
     if let Some(value) = std::env::var_os("XDG_STATE_HOME") {
         return Ok(PathBuf::from(value).join("omarchy-miracast"));
@@ -1059,18 +477,6 @@ fn set_dir_mode(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn stop_child(child: &mut Child) {
-    if let Some(pid) = child.id() {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-    }
-    if timeout(Duration::from_secs(3), child.wait()).await.is_err() {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-    }
-}
-
 fn clean(value: &str, limit: usize) -> String {
     value
         .chars()
@@ -1090,14 +496,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_and_modes_are_explicit_and_fail_closed() {
-        assert_eq!(backend(None), Backend::Native);
-        assert_eq!(backend(Some("doubletake")), Backend::DoubleTake);
-        assert_eq!(backend(Some("native")), Backend::Native);
-        assert_eq!(backend(Some("rust")), Backend::Native);
-        assert_eq!(backend(Some("unknown")), Backend::Invalid);
-        assert!(!experimental_audio(None));
-        assert!(experimental_audio(Some("1")));
+    fn native_features_fail_closed_on_fpsap() {
         assert!(ensure_native_features(0x038bcb46007f8ad0).is_ok());
         assert!(
             ensure_native_features(1 << 14)
@@ -1105,31 +504,6 @@ mod tests {
                 .to_string()
                 .contains("FPSAP")
         );
-        assert_eq!(display_mode(None).unwrap(), DisplayMode::Extended);
-        assert_eq!(display_mode(Some("mirror")).unwrap(), DisplayMode::Mirror);
-        assert!(display_mode(Some("unknown")).is_err());
-    }
-
-    #[test]
-    fn maps_airplay_devices_and_rejects_incomplete_entries() {
-        let devices = map_devices(&json!({
-            "devices": [
-                {"name":"Samsung 7 Series (50)","model":"UTU7000","ip":"192.168.1.139","port":59757,"device_id":"68:72:C3:A8:40:DF"},
-                {"name":"sin IP","ip":"","port":59757,"device_id":"00:00:00:00:00:01"},
-                {"name":"sin puerto","ip":"192.168.1.2","port":0,"device_id":"00:00:00:00:00:02"}
-            ]
-        }));
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0]["protocol"], "airplay");
-        assert_eq!(devices[0]["mac"], "68:72:C3:A8:40:DF");
-        assert_eq!(devices[0]["port"], 59757);
-        assert_eq!(devices[0]["wfd"], false);
-    }
-
-    #[test]
-    fn rejects_failed_daemon_operations() {
-        let error = check(json!({"ok":false,"error":"receiver rejected pairing"})).unwrap_err();
-        assert!(error.to_string().contains("receiver rejected pairing"));
     }
 
     #[test]
