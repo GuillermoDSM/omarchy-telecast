@@ -40,6 +40,9 @@ pub async fn run(
     let mut waiting_for_keyframe = true;
     let mut frames_sent = 0u64;
     let mut capture_interrupted: Option<Instant> = None;
+    let mut capture_age_max = 0u64;
+    let mut send_blocked_max = 0u64;
+    let mut late_frames = 0u64;
     let audio_start = Instant::now();
     let mut layout = crate::display::layout_signature().await.ok();
     let result: Result<()> = async {
@@ -86,7 +89,8 @@ pub async fn run(
                         // timestamp base without reporting an error. Detect the
                         // implausible age, rebuild the pipeline and wait for a
                         // fresh keyframe instead of sending late frames forever.
-                        if sources.capture_mut().sample_age(&frame) > Duration::from_millis(750) {
+                        let age = sources.capture_mut().sample_age(&frame);
+                        if age > Duration::from_millis(750) {
                             let retry = capture_interrupted
                                 .is_none_or(|at| at.elapsed() >= Duration::from_secs(2));
                             if capture_interrupted.is_none() {
@@ -104,7 +108,7 @@ pub async fn run(
                         capture_interrupted = None;
                         let Some(configuration) = frame.codec_data.as_ref() else { continue };
                         if waiting_for_keyframe && !frame.keyframe { continue; }
-                        let captured = sources.capture_mut().sample_instant(&frame);
+                        let captured = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
                         let (clock,timeline) = session.network_time(captured)?;
                         let timestamp = clock.checked_add(super::timing::compact_time(Duration::from_millis(u64::from(session.video_latency_ms)))).context("video timestamp overflow")?;
                         if codec.as_ref() != Some(configuration) {
@@ -113,7 +117,13 @@ pub async fn run(
                             timeout(Duration::from_secs(2),session.video.codec(configuration,width,height,timestamp)).await.context("Tiempo de configuración de vídeo agotado")??;
                             codec = Some(configuration.clone());
                         }
+                        let send_start = Instant::now();
                         timeout(Duration::from_secs(2),session.video.frame(&frame.data,frame.keyframe,timestamp,timeline)).await.context("Tiempo de envío de vídeo agotado")??;
+                        send_blocked_max = send_blocked_max.max(send_start.elapsed().as_millis() as u64);
+                        capture_age_max = capture_age_max.max(age.as_millis() as u64);
+                        if age > Duration::from_millis(u64::from(session.video_latency_ms)) {
+                            late_frames += 1;
+                        }
                         if waiting_for_keyframe { events.trace("native_media", "first_keyframe_sent"); waiting_for_keyframe = false; }
                         frames_sent += 1;
                     }
@@ -189,7 +199,17 @@ pub async fn run(
                             capture_interrupted = Some(Instant::now());
                         }
                     }
-                    events.send(serde_json::json!({"event":"trace","stage":"native_media","detail":"counters","video_frames":frames_sent,"codec_config_sent":codec.is_some()}));
+                    events.send(serde_json::json!({
+                        "event":"trace","stage":"native_media","detail":"counters",
+                        "video_frames":frames_sent,
+                        "codec_config_sent":codec.is_some(),
+                        "capture_age_max_ms":capture_age_max,
+                        "send_blocked_max_ms":send_blocked_max,
+                        "late_frames":late_frames
+                    }));
+                    capture_age_max = 0;
+                    send_blocked_max = 0;
+                    late_frames = 0;
                     output.check_pulse_monitor().await?;
                     let (timestamp,timeline) = session.network_time(Instant::now())?;
                     session.audio.sync(timestamp,if timeline == 0 { None } else { Some(timeline) },rtp,session.audio_latency_samples,false).await?;
