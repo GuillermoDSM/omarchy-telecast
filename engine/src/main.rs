@@ -119,12 +119,11 @@ async fn doctor() -> Value {
         let ok = gstreamer::ElementFactory::find(factory).is_some();
         checks.push(json!({"name":factory,"ok":ok,"detail":if ok { "Disponible" } else { "Falta el componente de GStreamer" }}));
     }
-    let vaapi = gstreamer::ElementFactory::find("vah264enc").is_some();
     let x264 = gstreamer::ElementFactory::find("x264enc").is_some();
     checks.push(json!({
         "name":"Codificador H.264",
-        "ok":vaapi || x264,
-        "detail":if vaapi { "VAAPI (vah264enc)" } else if x264 { "x264 (software)" } else { "Falta vah264enc y x264enc" }
+        "ok":x264,
+        "detail":if x264 { "x264 (software, estable)" } else { "Falta x264enc" }
     }));
     let audio = audio::native_available().await
         && ["pulsesrc", "audioconvert", "audioresample"]
