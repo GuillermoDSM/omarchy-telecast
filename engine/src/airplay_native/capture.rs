@@ -95,7 +95,7 @@ impl Capture {
             Source::Test => "videotestsrc name=capture is-live=true pattern=ball".to_owned(),
         };
         let pipeline = format!(
-            "{input} ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! videoscale add-borders=true ! videorate drop-only=true ! video/x-raw,format=I420,width={width},height={height},framerate={fps}/1 ! x264enc name=video_encoder tune=zerolatency speed-preset=veryfast bitrate={bitrate_kbps} key-int-max={fps} bframes=0 ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au ! appsink name=samples sync=false max-buffers=2 drop=false"
+            "{input} ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! videoscale add-borders=true ! videorate drop-only=true ! video/x-raw,format=I420,width={width},height={height},framerate={fps}/1 ! x264enc name=video_encoder tune=zerolatency speed-preset=veryfast bitrate={bitrate_kbps} key-int-max={fps} bframes=0 threads=4 ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au ! appsink name=samples sync=false max-buffers=2 drop=false"
         );
         Self::start(&pipeline, None)
     }
