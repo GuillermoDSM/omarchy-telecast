@@ -9,6 +9,10 @@ use crate::audio::TvOutput;
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -17,13 +21,28 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+enum VideoCommand {
+    Codec {
+        avcc: Vec<u8>,
+        width: u32,
+        height: u32,
+        timestamp: u64,
+    },
+    Frame {
+        data: Vec<u8>,
+        keyframe: bool,
+        timestamp: u64,
+        timeline: u64,
+    },
+}
+
 /// Keeps the output alive, checks its health, and closes the AirPlay session
 /// before returning. Caller keeps the portal authorization and display alive.
 pub async fn run(
     mut session: Session,
     mut sources: VideoSources,
     audio: Capture,
-    output: &TvOutput,
+    _output: &TvOutput,
     mut receiver_events: mpsc::Receiver<Event>,
     cancel: CancellationToken,
     events: crate::Events,
@@ -41,12 +60,52 @@ pub async fn run(
     let mut frames_sent = 0u64;
     let mut capture_interrupted: Option<Instant> = None;
     let mut capture_age_max = 0u64;
-    let mut send_blocked_max = 0u64;
     let mut late_frames = 0u64;
     let mut bitrate_kbps = crate::airplay_native::capture::DEFAULT_BITRATE_KBPS;
     let mut clean_intervals = 0u32;
     let audio_start = Instant::now();
     let mut layout = crate::display::layout_signature().await.ok();
+    let mut video_sender = session.take_video()?;
+    let (video_tx, mut video_rx) = mpsc::channel::<VideoCommand>(4);
+    let (video_error_tx, mut video_error_rx) = mpsc::channel::<String>(1);
+    let send_blocked = Arc::new(AtomicU64::new(0));
+    let blocked_counter = send_blocked.clone();
+    let video_task = tokio::spawn(async move {
+        while let Some(command) = video_rx.recv().await {
+            let started = Instant::now();
+            let result = match command {
+                VideoCommand::Codec {
+                    avcc,
+                    width,
+                    height,
+                    timestamp,
+                } => timeout(
+                    Duration::from_secs(2),
+                    video_sender.codec(&avcc, width, height, timestamp),
+                )
+                .await
+                .context("Tiempo de configuración de vídeo agotado")
+                .and_then(|result| result),
+                VideoCommand::Frame {
+                    data,
+                    keyframe,
+                    timestamp,
+                    timeline,
+                } => timeout(
+                    Duration::from_secs(2),
+                    video_sender.frame(&data, keyframe, timestamp, timeline),
+                )
+                .await
+                .context("Tiempo de envío de vídeo agotado")
+                .and_then(|result| result),
+            };
+            blocked_counter.fetch_max(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+            if let Err(error) = result {
+                let _ = video_error_tx.send(format!("{error:#}"));
+                return;
+            }
+        }
+    });
     let result: Result<()> = async {
         let (timestamp,timeline) = session.network_time(Instant::now())?;
         session.audio.sync(timestamp,if timeline == 0 { None } else { Some(timeline) },0,session.audio_latency_samples,true).await?;
@@ -59,9 +118,20 @@ pub async fn run(
                 retransmit = session.audio.receive_retransmit() => {
                     retransmit.context("error de retransmisión de audio")?;
                 }
+                video_error = video_error_rx.recv(), if !video_error_rx.is_closed() => {
+                    if let Some(error) = video_error {
+                        return Err(anyhow::anyhow!(error));
+                    }
+                }
                 _ = polling.tick() => {
                     for _ in 0..4 {
-                        let frame = match sources.capture_mut().pull() {
+                        // Never pull a frame unless the video task can accept
+                        // both a possible codec update and the frame. Dropping
+                        // encoded P-frames would corrupt the H.264 chain.
+                        if video_tx.capacity() < 2 {
+                            break;
+                        }
+                        let mut frame = match sources.capture_mut().pull() {
                             Ok(Some(frame)) => {
                                 capture_interrupted = None;
                                 frame
@@ -116,12 +186,25 @@ pub async fn run(
                         if codec.as_ref() != Some(configuration) {
                             // Dimensions are read from negotiated H.264 caps by the caller's fixed capture configuration.
                             let (width,height) = sources.capture_mut().dimensions().context("missing negotiated video dimensions")?;
-                            timeout(Duration::from_secs(2),session.video.codec(configuration,width,height,timestamp)).await.context("Tiempo de configuración de vídeo agotado")??;
+                            video_tx
+                                .try_send(VideoCommand::Codec {
+                                    avcc: configuration.clone(),
+                                    width,
+                                    height,
+                                    timestamp,
+                                })
+                                .map_err(|_| anyhow::anyhow!("video task stopped"))?;
                             codec = Some(configuration.clone());
                         }
-                        let send_start = Instant::now();
-                        timeout(Duration::from_secs(2),session.video.frame(&frame.data,frame.keyframe,timestamp,timeline)).await.context("Tiempo de envío de vídeo agotado")??;
-                        send_blocked_max = send_blocked_max.max(send_start.elapsed().as_millis() as u64);
+                        let data = std::mem::take(&mut frame.data);
+                        video_tx
+                            .try_send(VideoCommand::Frame {
+                                data,
+                                keyframe: frame.keyframe,
+                                timestamp,
+                                timeline,
+                            })
+                            .map_err(|_| anyhow::anyhow!("video task stopped"))?;
                         capture_age_max = capture_age_max.max(age.as_millis() as u64);
                         if age > Duration::from_millis(u64::from(session.video_latency_ms)) {
                             late_frames += 1;
@@ -201,6 +284,7 @@ pub async fn run(
                             capture_interrupted = Some(Instant::now());
                         }
                     }
+                    let send_blocked_max = send_blocked.swap(0, Ordering::Relaxed);
                     // Keep 8 Mb/s when the link is healthy. Back off only on
                     // real sender congestion, then recover gradually. Lowering
                     // quality preemptively would trade image quality for no
@@ -241,9 +325,9 @@ pub async fn run(
                         "bitrate_kbps":bitrate_kbps
                     }));
                     capture_age_max = 0;
-                    send_blocked_max = 0;
                     late_frames = 0;
-                    output.check_pulse_monitor().await?;
+                    // The pulse monitor is checked by the audio pipeline itself;
+                    // running pactl/pw-dump here would block audio pacing.
                     let (timestamp,timeline) = session.network_time(Instant::now())?;
                     session.audio.sync(timestamp,if timeline == 0 { None } else { Some(timeline) },rtp,session.audio_latency_samples,false).await?;
                     timeout(Duration::from_secs(2),session.feedback()).await.context("Tiempo de feedback AirPlay agotado")??;
@@ -252,6 +336,8 @@ pub async fn run(
         }
         Ok(())
     }.await;
+    drop(video_tx);
+    let _ = timeout(Duration::from_secs(2), video_task).await;
     let stop = timeout(Duration::from_secs(2), session.stop())
         .await
         .context("Tiempo de cierre AirPlay agotado")

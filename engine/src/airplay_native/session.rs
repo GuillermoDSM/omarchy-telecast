@@ -78,7 +78,7 @@ pub struct Session {
     control: Client,
     uri: String,
     session_uuid: String,
-    pub video: VideoSender,
+    pub video: Option<VideoSender>,
     pub audio: AudioSender,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -251,6 +251,12 @@ impl Session {
             }
         }
     }
+    /// Move the video transport into its own task so TCP backpressure cannot
+    /// delay audio pacing.
+    pub fn take_video(&mut self) -> Result<VideoSender> {
+        self.video.take().context("video transport already taken")
+    }
+
     /// Send exactly 352 interleaved stereo S16LE samples. The caller owns
     /// pacing and advances the RTP timestamp by 352 for every frame.
     pub async fn send_pcm(&mut self, pcm: &[u8], rtp_timestamp: u32) -> Result<()> {
@@ -583,7 +589,7 @@ impl Session {
                     control,
                     uri: audio_uri,
                     session_uuid: config.session_uuid,
-                    video,
+                    video: Some(video),
                     audio,
                     cancel,
                     tasks,
@@ -883,13 +889,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert!(sample.keyframe);
-        session
-            .video
+        let video = session.video.as_mut().unwrap();
+        video
             .codec(sample.codec_data.as_ref().unwrap(), 320, 240, 0)
             .await
             .unwrap();
-        session
-            .video
+        video
             .frame(&sample.data, true, 0, 0)
             .await
             .unwrap();
@@ -968,13 +973,12 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        session
-            .video
+        let video = session.video.as_mut().unwrap();
+        video
             .codec(&sample.codec_data.unwrap(), 320, 240, timestamp)
             .await
             .unwrap();
-        session
-            .video
+        video
             .frame(&sample.data, sample.keyframe, timestamp, timeline)
             .await
             .unwrap();
