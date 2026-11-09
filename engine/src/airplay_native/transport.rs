@@ -106,8 +106,9 @@ fn validate_avcc(mut data: &[u8]) -> Result<()> {
 
 #[derive(Clone, Copy)]
 pub enum AudioAad {
+    /// Used by protocol tests; the manager selects TimestampSsrc.
+    #[allow(dead_code)]
     None,
-    Header,
     TimestampSsrc,
 }
 
@@ -160,7 +161,6 @@ impl AudioSender {
         header[8..12].copy_from_slice(&self.ssrc.to_be_bytes());
         let aad = match self.aad {
             AudioAad::None => &[][..],
-            AudioAad::Header => &header[..],
             AudioAad::TimestampSsrc => &header[4..12],
         };
         let mut nonce = [0u8; 12];

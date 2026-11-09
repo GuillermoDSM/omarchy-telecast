@@ -221,6 +221,8 @@ fn parse_header(header: &[u8], sequence: u32) -> Result<(u16, BTreeMap<String, S
 
 /// RFC 2069 digest, as used by AirPlay password-protected receivers.
 /// Reject qop and non-MD5 challenges instead of silently generating an invalid response.
+/// Kept for password-protected receivers; exercised by the unit tests.
+#[allow(dead_code)]
 pub fn digest_authorization(
     challenge: &str,
     password: &str,

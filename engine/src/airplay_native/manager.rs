@@ -26,7 +26,6 @@ pub struct Manager {
     pairer: Pairer,
     shared: Option<[u8; 32]>,
     pub features: u64,
-    pub status_flags: u64,
     pub source_version: String,
     pub state: State,
 }
@@ -52,10 +51,6 @@ impl Manager {
             .get("features")
             .and_then(Value::as_unsigned_integer)
             .context("receiver omitted features")?;
-        let status_flags = fields
-            .get("statusFlags")
-            .and_then(Value::as_unsigned_integer)
-            .unwrap_or(0);
         let source_version = fields
             .get("sourceVersion")
             .and_then(Value::as_string)
@@ -73,7 +68,6 @@ impl Manager {
             },
             shared: None,
             features,
-            status_flags,
             source_version,
             state: State::Connected,
         })

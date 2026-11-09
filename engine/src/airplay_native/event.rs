@@ -13,7 +13,6 @@ use tokio_util::sync::CancellationToken;
 pub struct Event {
     pub method: String,
     pub path: String,
-    pub content_type: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -76,7 +75,6 @@ fn parse(data: &[u8]) -> Result<Option<(usize, u64, Event)>> {
     );
     let mut cseq = None;
     let mut length = None;
-    let mut content_type = None;
     for line in lines {
         let (name, value) = line.split_once(':').context("invalid event header")?;
         let value = value.trim();
@@ -86,9 +84,6 @@ fn parse(data: &[u8]) -> Result<Option<(usize, u64, Event)>> {
         } else if name.eq_ignore_ascii_case("content-length") {
             ensure!(length.is_none(), "duplicate event length");
             length = Some(value.parse::<usize>()?);
-        } else if name.eq_ignore_ascii_case("content-type") {
-            ensure!(content_type.is_none(), "duplicate event content type");
-            content_type = Some(value.to_owned());
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             anyhow::bail!("unsupported event transfer encoding");
         }
@@ -102,7 +97,6 @@ fn parse(data: &[u8]) -> Result<Option<(usize, u64, Event)>> {
     let event = Event {
         method,
         path,
-        content_type,
         body: data[end + 4..used].to_vec(),
     };
     Ok(Some((used, cseq.context("event missing CSeq")?, event)))

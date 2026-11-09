@@ -165,6 +165,8 @@ impl TvOutput {
     pub fn node_name(&self) -> &str {
         &self.name
     }
+    /// Used by tests/audio_pipewire_test.py, which injects its own test module.
+    #[allow(dead_code)]
     #[cfg(test)]
     pub fn node_id(&self) -> u32 {
         self.node

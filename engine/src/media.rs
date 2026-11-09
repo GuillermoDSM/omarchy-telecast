@@ -165,9 +165,9 @@ mod tests {
     fn hyprland_mapping_id_overrides_placeholder_position() {
         assert!(
             validate_stream(
-                "OMARCHY-WFD-42",
+                "OMARCHY-TELECAST-42",
                 (1536, 0),
-                Some("OMARCHY-WFD-42"),
+                Some("OMARCHY-TELECAST-42"),
                 Some((0, 0)),
                 Some((1920, 1080))
             )
@@ -179,7 +179,7 @@ mod tests {
     fn wrong_output_is_rejected_even_when_geometry_matches() {
         assert!(
             validate_stream(
-                "OMARCHY-WFD-42",
+                "OMARCHY-TELECAST-42",
                 (1536, 0),
                 Some("eDP-1"),
                 Some((1536, 0)),
@@ -191,10 +191,10 @@ mod tests {
 
     #[test]
     fn incomplete_or_wrong_size_metadata_does_not_authorize_another_screen() {
-        assert!(validate_stream("OMARCHY-WFD-42", (1536, 0), None, None, None).is_err());
+        assert!(validate_stream("OMARCHY-TELECAST-42", (1536, 0), None, None, None).is_err());
         assert!(
             validate_stream(
-                "OMARCHY-WFD-42",
+                "OMARCHY-TELECAST-42",
                 (1536, 0),
                 None,
                 Some((0, 0)),
@@ -204,9 +204,9 @@ mod tests {
         );
         assert!(
             validate_stream(
-                "OMARCHY-WFD-42",
+                "OMARCHY-TELECAST-42",
                 (1536, 0),
-                Some("OMARCHY-WFD-42"),
+                Some("OMARCHY-TELECAST-42"),
                 Some((0, 0)),
                 Some((3840, 2160))
             )

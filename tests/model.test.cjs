@@ -3,11 +3,18 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const model = vm.createContext({});
-vm.runInContext(fs.readFileSync(path.join(__dirname, "../MiracastModel.js"), "utf8").replace(/^\.pragma library\s*/, ""), model);
+vm.runInContext(fs.readFileSync(path.join(__dirname, "../TelecastModel.js"), "utf8").replace(/^\.pragma library\s*/, ""), model);
 
-assert.equal(model.phaseLabel("capture"), "ELIGE PANTALLA");
-assert.equal(model.phaseLabel("pairing"), "EMPAREJANDO");
-assert.equal(model.phaseLabel("unknown"), "ENVIAR PANTALLA");
+assert.equal(model.language("es_ES.UTF-8"), "es");
+assert.equal(model.language("en_US.UTF-8"), "en");
+assert.equal(model.language(""), "en");
+assert.equal(model.dictionary("es").title, "Enviar pantalla");
+assert.equal(model.dictionary("en").title, "Send screen");
+assert.equal(model.phaseLabel("capture", "es"), "ELIGE PANTALLA");
+assert.equal(model.phaseLabel("pairing", "es"), "EMPAREJANDO");
+assert.equal(model.phaseLabel("unknown", "es"), "ENVIAR PANTALLA");
+assert.equal(model.phaseLabel("capture", "en"), "PICK A SCREEN");
+assert.equal(model.phaseLabel("unknown", "en"), "SEND SCREEN");
 assert.equal(model.plain("TV\n\x1b"), "TV  ");
 assert.equal(model.peers(null).length, 0);
 const peers = model.peers([

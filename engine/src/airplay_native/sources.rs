@@ -98,7 +98,7 @@ impl VideoSources {
                 .iter()
                 .find(|monitor| {
                     !monitor.disabled
-                        && !monitor.name.starts_with("OMARCHY-WFD-")
+                        && !monitor.name.starts_with("OMARCHY-TELECAST-")
                         && !monitor.name.is_empty()
                 })
                 .context("No hay una pantalla física para duplicar")?;

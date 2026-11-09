@@ -50,7 +50,7 @@ impl SessionLog {
         ensure!(base.is_absolute(), "XDG_STATE_HOME debe ser absoluto");
         // The standard XDG state directory is user managed. Do not recursively
         // change its permissions or follow a plugin-specific symlink.
-        let root = directory(&base, "omarchy-miracast")?;
+        let root = directory(&base, "omarchy-telecast")?;
         let logs = directory(&root, "sessions")?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
         for index in 0..100u8 {

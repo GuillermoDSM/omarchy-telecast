@@ -44,10 +44,6 @@ impl MediaClock {
                 .checked_sub(compact_time(self.anchor.duration_since(at)))
         }
     }
-    pub fn reanchor(&mut self, instant: Instant, timestamp: u64) {
-        self.timestamp = self.at(instant).unwrap_or(timestamp).max(timestamp);
-        self.anchor = instant;
-    }
 }
 
 /// CLOCK_BOOTTIME matches AirPlay's boot-relative timestamps, including suspend.

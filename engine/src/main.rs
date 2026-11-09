@@ -490,7 +490,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("Uso: omarchy-miracast {{serve|doctor|scan}}");
+            eprintln!("Uso: omarchy-telecast {{serve|doctor|scan}}");
             Ok(())
         }
     }

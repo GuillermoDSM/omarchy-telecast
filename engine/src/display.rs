@@ -91,7 +91,7 @@ pub async fn cleanup_stale() {
     for monitor in current {
         let Some(pid) = monitor
             .name
-            .strip_prefix("OMARCHY-WFD-")
+            .strip_prefix("OMARCHY-TELECAST-")
             .and_then(|pid| pid.parse::<u32>().ok())
         else {
             continue;
@@ -105,7 +105,7 @@ pub async fn cleanup_stale() {
 
 impl VirtualDisplay {
     pub fn session_name() -> String {
-        format!("OMARCHY-WFD-{}", std::process::id())
+        format!("OMARCHY-TELECAST-{}", std::process::id())
     }
 
     pub async fn create() -> Result<Self> {
@@ -169,7 +169,7 @@ async fn remove_owned(name: &str, id: Option<u32>) -> Result<()> {
     }
     let fallback = current
         .iter()
-        .find(|m| !m.disabled && m.name != name && !m.name.starts_with("OMARCHY-WFD-"))
+        .find(|m| !m.disabled && m.name != name && !m.name.starts_with("OMARCHY-TELECAST-"))
         .context("No se elimina el monitor virtual porque no hay otra pantalla disponible")?;
     ensure!(
         fallback

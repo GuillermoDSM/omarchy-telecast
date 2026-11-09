@@ -11,9 +11,6 @@ pub struct Device {
     pub addresses: Vec<SocketAddr>,
     pub device_id: Option<String>,
     pub model: Option<String>,
-    pub public_key: Option<String>,
-    pub features: u64,
-    pub txt: BTreeMap<String, String>,
 }
 
 /// Browse until the deadline. The daemon is stopped even if the caller receives no results.
@@ -46,7 +43,6 @@ pub async fn discover(window: Duration) -> Result<Vec<Device>> {
                     .map(|p| (p.key().to_ascii_lowercase(), p.val_str().to_owned()))
                     .collect();
                 let get = |key: &str| txt.get(key).cloned();
-                let features = get("features").as_deref().map(parse_features).unwrap_or(0);
                 let name = service
                     .fullname
                     .strip_suffix(&format!(".{SERVICE}"))
@@ -59,9 +55,6 @@ pub async fn discover(window: Duration) -> Result<Vec<Device>> {
                         addresses,
                         device_id: get("deviceid"),
                         model: get("model"),
-                        public_key: get("pk"),
-                        features,
-                        txt,
                     },
                 );
             }
@@ -74,33 +67,4 @@ pub async fn discover(window: Duration) -> Result<Vec<Device>> {
     let _ = daemon.stop_browse(SERVICE);
     let _ = daemon.shutdown();
     Ok(found.into_values().collect())
-}
-
-fn parse_features(value: &str) -> u64 {
-    fn parse(v: &str) -> Option<u64> {
-        let v = v.trim();
-        if let Some(v) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
-            u64::from_str_radix(v, 16).ok()
-        } else {
-            v.parse().ok()
-        }
-    }
-    let mut parts = value.split(',');
-    let low = parts.next().and_then(parse).unwrap_or(0) & 0xffff_ffff;
-    let high = parts.next().and_then(parse).unwrap_or(0) & 0xffff_ffff;
-    if value.contains(',') {
-        low | high << 32
-    } else {
-        parse(value).unwrap_or(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn feature_words() {
-        assert_eq!(parse_features("0x1234,0x2"), 0x2_0000_1234);
-        assert_eq!(parse_features("0x100000000"), 0x1_0000_0000);
-    }
 }

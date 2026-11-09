@@ -43,6 +43,8 @@ pub fn alac_stereo(pcm: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Build an AVCDecoderConfigurationRecord from raw H.264 SPS and PPS NAL units.
+/// Kept as a protocol helper and exercised by the unit tests.
+#[allow(dead_code)]
 pub fn avcc_configuration(sps: &[u8], pps: &[u8]) -> Result<Vec<u8>> {
     ensure!(sps.len() >= 4 && sps[0] & 0x1f == 7, "invalid H.264 SPS");
     ensure!(!pps.is_empty() && pps[0] & 0x1f == 8, "invalid H.264 PPS");
@@ -58,6 +60,8 @@ pub fn avcc_configuration(sps: &[u8], pps: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Convert a list of raw H.264 NAL units into a length-prefixed access unit.
+/// Kept as a protocol helper and exercised by the unit tests.
+#[allow(dead_code)]
 pub fn avcc_access_unit(nals: &[&[u8]]) -> Result<Vec<u8>> {
     ensure!(!nals.is_empty(), "empty H.264 access unit");
     let mut out = Vec::new();

@@ -864,7 +864,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "omarchy-miracast"
+name = "omarchy-telecast"
 version = "0.2.0"
 dependencies = [
  "anyhow",

@@ -1,8 +1,10 @@
 [package]
-name = "omarchy-miracast"
+name = "omarchy-telecast"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
+repository = "https://github.com/GuillermoDSM/omarchy-telecast"
 description = "Experimental AirPlay sender for the Omarchy shell"
 
 [dependencies]

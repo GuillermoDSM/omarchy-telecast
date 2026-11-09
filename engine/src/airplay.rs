@@ -476,13 +476,13 @@ async fn native_run(
 
 fn state_dir() -> Result<PathBuf> {
     if let Some(value) = std::env::var_os("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(value).join("omarchy-miracast"));
+        return Ok(PathBuf::from(value).join("omarchy-telecast"));
     }
     if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".local/state/omarchy-miracast"));
+        return Ok(PathBuf::from(home).join(".local/state/omarchy-telecast"));
     }
     Ok(
-        std::env::temp_dir().join(format!("omarchy-miracast-state-{}", unsafe {
+        std::env::temp_dir().join(format!("omarchy-telecast-state-{}", unsafe {
             libc::getuid()
         })),
     )

@@ -6,17 +6,18 @@ import qs.Ui as Ui
 import qs.Commons
 import qs.Commons as Commons
 import "." as Cast
-import "MiracastModel.js" as Model
+import "TelecastModel.js" as Model
 
 Panel {
   id: root
-  moduleName: "astro67.miracast"
-  ipcTarget: "astro67.miracast"
+  moduleName: "astro67.telecast"
+  ipcTarget: "astro67.telecast"
   // The AirPlay service singleton owns the shared IPC handler for scan/stop/
   // status. The panel only needs the base class's open/close lifecycle.
   manageIpc: false
 
-  readonly property var service: Cast.MiracastService
+  readonly property var service: Cast.TelecastService
+  readonly property var t: root.service.i18n
   readonly property color foreground: root.barForeground
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
   readonly property bool active: service.enabled
@@ -28,24 +29,15 @@ Panel {
   property bool cursorActive: false
   property string focusedReceiverKey: ""
 
-  readonly property var activePhrases: [
-    "Buscando señales",
-    "Sincronizando pantallas",
-    "Enviando píxeles",
-    "Ajustando latencia",
-    "Tejiendo paquetes",
-    "Domando radios",
-    "Puliendo códecs",
-    "Conectando mundos"
-  ]
+  readonly property var activePhrases: root.t.phrases
   readonly property bool rotatingPhrases: service.discovering
   readonly property string heroStatusText: {
-    if (!service.enabled) return "Desactivado"
-    if (service.shuttingDown) return "Desconectando"
-    if (service.phase === "error") return "Error"
+    if (!service.enabled) return root.t.off
+    if (service.shuttingDown) return root.t.disconnecting
+    if (service.phase === "error") return root.t.error
     if (service.discovering) return activePhrases[phraseIndex % activePhrases.length]
     if (service.busy) return service.statusLabel
-    return service.receivers.length > 0 ? "Listo · elige una TV" : "Listo"
+    return service.receivers.length > 0 ? root.t.readyPick : root.t.ready
   }
 
   readonly property string barIcon: active ? "󰄙" : "󰄘"
@@ -373,7 +365,7 @@ Panel {
             spacing: Style.space(2)
 
             Text {
-              text: "Enviar pantalla"
+              text: root.t.title
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -431,7 +423,7 @@ Panel {
           visible: root.connectedReceiver !== null
 
           PanelSectionHeader {
-            text: "CONECTADO"
+            text: root.t.connected
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
@@ -452,7 +444,7 @@ Panel {
           onVisibleChanged: if (visible) Qt.callLater(pinInput.forceActiveFocus)
 
           PanelSectionHeader {
-            text: root.service.pinKind === "password" ? "CONTRASEÑA DE LA TV" : "PIN DE LA TV"
+            text: root.service.pinKind === "password" ? root.t.tvPassword : root.t.tvPin
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
@@ -460,7 +452,7 @@ Panel {
           Ui.TextField {
             id: pinInput
             width: parent.width
-            placeholderText: root.service.pinKind === "password" ? "Contraseña" : "PIN"
+            placeholderText: root.service.pinKind === "password" ? root.t.password : root.t.pin
             inputMethodHints: root.service.pinKind === "password" ? Qt.ImhNone : Qt.ImhDigitsOnly
             maximumLength: 128
             foreground: root.foreground
@@ -472,7 +464,7 @@ Panel {
 
           Ui.Button {
             width: parent.width
-            text: "Enviar código"
+            text: root.t.sendCode
             bordered: true
             foreground: root.foreground
             onClicked: {
@@ -526,8 +518,8 @@ Panel {
           width: parent.width
           visible: root.connectedReceiver === null && root.availableReceivers.length === 0
           text: root.service.enabled && root.service.discovering
-            ? "Buscando..."
-            : "No hay pantallas disponibles"
+            ? root.t.searching
+            : root.t.noScreens
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: Qt.darker(root.foreground, 1.5)
@@ -538,7 +530,7 @@ Panel {
         // ---------- Diagnostics (secondary) ----------
         Text {
           width: parent.width
-          text: root.showDiagnostics ? "Ocultar depuración" : "Depuración"
+          text: root.showDiagnostics ? root.t.hideDebug : root.t.debug
           textFormat: Text.PlainText
           color: Qt.darker(root.foreground, 1.5)
           font.family: root.fontFamily
@@ -566,7 +558,7 @@ Panel {
 
             Ui.Button {
               width: parent.width
-              text: root.service.testPattern ? "✓ Patrón de prueba (sin capturar pantalla)" : "Patrón de prueba (sin capturar pantalla)"
+              text: root.service.testPattern ? root.t.testPatternOn : root.t.testPattern
               selected: root.service.testPattern
               bordered: true
               foreground: root.foreground
@@ -577,7 +569,7 @@ Panel {
             Text {
               width: parent.width
               visible: root.service.logPath !== ""
-              text: "Registro: " + root.service.logPath
+              text: root.t.log + root.service.logPath
               textFormat: Text.PlainText
               wrapMode: Text.WrapAnywhere
               color: root.foreground
@@ -627,15 +619,15 @@ Panel {
       && root.selectedIndex === rowIndex
     readonly property bool canActivate: !!dev && (isConnected || (!root.service.busy
       && root.service.airplayReady))
-    readonly property string actionTooltip: !dev ? "" : (isConnected ? "Desconectar" : (canActivate ? "Conectar" : ""))
+    readonly property string actionTooltip: !dev ? "" : (isConnected ? root.t.disconnect : (canActivate ? root.t.connect : ""))
 
     readonly property string statusText: {
       if (!dev) return ""
       if (isConnected) {
-        if (root.service.phase === "pairing") return "Emparejando…"
-        if (root.service.phase === "stopping") return "Desconectando…"
-        if (root.service.streaming) return "Enviando pantalla"
-        return "Conectando…"
+        if (root.service.phase === "pairing") return root.t.pairing
+        if (root.service.phase === "stopping") return root.t.disconnectingStatus
+        if (root.service.streaming) return root.t.sending
+        return root.t.connecting
       }
       if (root.service.busy) return ""
       return dev.model || "AirPlay"
@@ -654,7 +646,7 @@ Panel {
 
     implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
     Accessible.role: Accessible.Button
-    Accessible.name: (dev ? dev.name : "TV") + (isConnected ? " · Desconectar" : " · Conectar")
+    Accessible.name: (dev ? dev.name : "TV") + (isConnected ? " · " + root.t.disconnect : " · " + root.t.connect)
 
     MouseArea {
       id: rowMouse

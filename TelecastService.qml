@@ -3,7 +3,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import "MiracastModel.js" as Model
+import "TelecastModel.js" as Model
 
 // Shared by every bar surface, including the headless output we create. A
 // second bar must NOT start a second backend or steal the active session.
@@ -32,8 +32,14 @@ QtObject {
   property var history: []
   property string logPath: ""
 
-  readonly property string enginePath: decodeURIComponent(String(Qt.resolvedUrl("bin/omarchy-miracast")).replace(/^file:\/\//, ""))
-  readonly property string statusLabel: Model.phaseLabel(root.phase)
+  readonly property string enginePath: decodeURIComponent(String(Qt.resolvedUrl("bin/omarchy-telecast")).replace(/^file:\/\//, ""))
+  readonly property string uiLanguage: {
+    var override = String(Quickshell.env("TELECAST_LANG") || "").toLowerCase()
+    if (override === "es" || override === "en") return override
+    return Model.language(Qt.locale().name)
+  }
+  readonly property var i18n: Model.dictionary(root.uiLanguage)
+  readonly property string statusLabel: Model.phaseLabel(root.phase, root.uiLanguage)
   readonly property bool streaming: root.phase === "streaming"
 
   function attach() { root.users++ }
@@ -119,7 +125,7 @@ QtObject {
       root.discovering = false
       root.busy = false
       root.phase = "offline"
-      root.detail = "Envío de pantalla desactivado"
+      root.detail = root.i18n.screenDisabled
       if (backend.running) {
         root.shuttingDown = true
         // Quit follows the engine's cooperative session cleanup.
@@ -129,7 +135,7 @@ QtObject {
       root.discover()
     } else {
       root.phase = "offline"
-      root.detail = "Esperando a que termine la desconexión"
+      root.detail = root.i18n.waitingDisconnect
     }
   }
 
@@ -170,7 +176,7 @@ QtObject {
         root.logPath = Model.plain(event.path, 1024)
       }
     } catch (error) {
-      root.warning = "Respuesta inválida del motor; consulta el diagnóstico"
+      root.warning = root.i18n.invalidResponse
     }
   }
 
@@ -194,17 +200,19 @@ QtObject {
       root.selectedKey = ""
       if (intentional) {
         root.phase = "offline"
-        root.detail = root.enabled ? "Motor detenido" : "Envío de pantalla desactivado"
+        root.detail = root.enabled ? root.i18n.engineStopped : root.i18n.screenDisabled
         if (root.enabled) Qt.callLater(root.discover)
         return
       }
       root.phase = exitCode === 0 ? "offline" : "error"
-      root.detail = exitCode === 0 ? "Motor detenido" : "El motor terminó con código " + exitCode + ". Abre Diagnóstico para ver detalles."
+      root.detail = exitCode === 0
+        ? root.i18n.engineStopped
+        : root.i18n.engineExit + exitCode + root.i18n.engineExitHint
     }
   }
 
   property IpcHandler ipc: IpcHandler {
-    target: "astro67.miracast"
+    target: "astro67.telecast"
     function scan(): string { root.discover(); return "ok" }
     function stop(): string { root.stop(); return "ok" }
     function enable(): string { root.setEnabled(true); return "ok" }
